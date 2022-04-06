@@ -20,7 +20,7 @@ if [[ $HOST == *".astro.illinois.edu" ]]; then
   #PREFIX_PATH="$HOME/libs/hdf5-oneapi/"
 
   # To load GNU stuff
-  module load gnu mpich phdf5
+  module load gnu mpich phdf5 fftw3
   PREFIX_PATH="$MPI_DIR"
 
   # Add back just the intel compilers, not MPI

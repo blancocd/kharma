@@ -100,6 +100,8 @@ void KHARMA::ProblemGenerator(MeshBlock *pmb, ParameterInput *pin)
         status = InitializeNoh(rc.get(), pin);
     } else if (prob == "hubble") {
         status = InitializeHubble(rc.get(), pin);
+    } else if (prob == "driven_turbulence") {
+        status = InitializeDrivenTurbulence(rc.get(), pin);
     // Extended GRMHD
     } else if (prob == "emhdmodes") {
         status = InitializeEMHDModes(rc.get(), pin);
