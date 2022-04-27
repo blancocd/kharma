@@ -37,11 +37,27 @@
 
 #include <parthenon/parthenon.hpp>
 
+#include "types.hpp"
+
 using namespace parthenon;
 
 /**
  * A Driver object orchestrates everything that has to be done to a mesh to constitute a step.
- * For HARM, this means the predictor-corrector steps of fluid evolution
+ * For HARM, this means the predictor-corrector steps of fluid evolution.
+ * 
+ * Unlike MHD, GRMHD has two independent sets of variables: the conserved variables, and a set of
+ * "primitive" variables more amenable to reconstruction.  To evolve the fluid, the conserved
+ * variables must be:
+ * 1. Transformed to the primitives
+ * 2. Reconstruct the right- and left-going components at zone faces
+ * 3. Transform back to conserved quantities and calculate the fluxes at faces
+ * 4. Update conserved variables using the divergence of conserved fluxes
+ * 
+ * (for higher-order schemes, this is more or less just repeated and added)
+ *
+ * iharm3d (and the ImEx driver) put step 1 at the bottom, and syncs/fixes primitive variables
+ * between each step.  This driver runs through the steps as listed, applying floors after step
+ * 1 as iharm3d does, but syncing the conserved variables.
  */
 class HARMDriver : public MultiStageDriver {
     public:
@@ -66,3 +82,41 @@ class HARMDriver : public MultiStageDriver {
         // Global solves need a reduction point
         AllReduce<Real> update_norm;
 };
+
+/**
+ * Add a boundary synchronization sequence to the TaskCollection tc.
+ * 
+ * This sequence is used identically in several places, so it makes sense
+ * to define once and use elsewhere.
+ * TODO could make member of a HARMDriver/ImExDriver superclass?
+ */
+inline void AddBoundarySync(TaskCollection &tc, Mesh *pmesh, BlockList_t &blocks, StagedIntegrator *integrator, int stage)
+{
+    TaskID t_none(0);
+    const int num_partitions = pmesh->DefaultNumPartitions();
+    auto stage_name = integrator->stage_name;
+    TaskRegion &tr1 = tc.AddRegion(num_partitions);
+    for (int i = 0; i < num_partitions; i++) {
+        auto &mc1 = pmesh->mesh_data.GetOrAdd(stage_name[stage], i);
+        tr1[i].AddTask(t_none,
+            [](MeshData<Real> *mc1){ Flag(mc1, "Parthenon Send Buffers"); return TaskStatus::complete; }
+        , mc1.get());
+        tr1[i].AddTask(t_none, cell_centered_bvars::SendBoundaryBuffers, mc1);
+    }
+    TaskRegion &tr2 = tc.AddRegion(num_partitions);
+    for (int i = 0; i < num_partitions; i++) {
+        auto &mc1 = pmesh->mesh_data.GetOrAdd(stage_name[stage], i);
+        tr2[i].AddTask(t_none,
+            [](MeshData<Real> *mc1){ Flag(mc1, "Parthenon Recv Buffers"); return TaskStatus::complete; }
+        , mc1.get());
+        tr2[i].AddTask(t_none, cell_centered_bvars::ReceiveBoundaryBuffers, mc1);
+    }
+    TaskRegion &tr3 = tc.AddRegion(num_partitions);
+    for (int i = 0; i < num_partitions; i++) {
+        auto &mc1 = pmesh->mesh_data.GetOrAdd(stage_name[stage], i);
+        tr3[i].AddTask(t_none,
+            [](MeshData<Real> *mc1){ Flag(mc1, "Parthenon Set Boundaries"); return TaskStatus::complete; }
+        , mc1.get());
+        tr3[i].AddTask(t_none, cell_centered_bvars::SetBoundaries, mc1);
+    }
+}

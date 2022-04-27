@@ -54,7 +54,6 @@
 
 #include "bondi.hpp"
 #include "boundaries.hpp"
-#include "fixup.hpp"
 #include "harm_driver.hpp"
 #include "resize_restart.hpp"
 
@@ -139,8 +138,8 @@ void KHARMA::FixParameters(std::unique_ptr<ParameterInput>& pin)
             throw std::invalid_argument("Not enough radial zones were specified to put 5 zones inside EH!");
         }
         //cerr << "Setting x1min: " << x1min << " x1max " << x1max << " based on BH with a=" << a << endl;
-        pin->SetReal("parthenon/mesh", "x1min", x1min);
-        pin->SetReal("parthenon/mesh", "x1max", x1max);
+        pin->SetPrecise("parthenon/mesh", "x1min", x1min);
+        pin->SetPrecise("parthenon/mesh", "x1max", x1max);
     } else if (cb == "spherical_ks" || cb == "spherical_bl") {
         // If we're in GR with a null transform, apply the criterion to our coordinates directly
         int n1tot = pin->GetInteger("parthenon/mesh", "nx1");
@@ -150,14 +149,15 @@ void KHARMA::FixParameters(std::unique_ptr<ParameterInput>& pin)
         // Set Rin such that we have 5 zones completely inside the event horizon
         // i.e. we want Rhor = Rin + 5.5 * (Rout - Rin) / N1TOT:
         GReal Rin = (n1tot * Rhor / 5.5 - Rout) / (-1. + n1tot / 5.5);
-        pin->SetReal("parthenon/mesh", "x1min", Rin);
-        pin->SetReal("parthenon/mesh", "x1max", Rout);
+        pin->SetPrecise("parthenon/mesh", "x1min", Rin);
+        pin->SetPrecise("parthenon/mesh", "x1max", Rout);
     } else if (cb == "spherical_minkowski") {
         // In Minkowski space, go to SMALL (TODO all the way to 0?)
         GReal Rout = pin->GetReal("coordinates", "r_out");
-        pin->SetReal("parthenon/mesh", "x1min", SMALL);
-        pin->SetReal("parthenon/mesh", "x1max", Rout);
+        pin->SetPrecise("parthenon/mesh", "x1min", SMALL);
+        pin->SetPrecise("parthenon/mesh", "x1max", Rout);
     }
+    
 
     // Assumption: if we're in a spherical system...
     if (cb == "spherical_ks" || cb == "spherical_bl" || cb == "spherical_minkowski") {
@@ -176,15 +176,15 @@ void KHARMA::FixParameters(std::unique_ptr<ParameterInput>& pin)
 
         // We also know the bounds for most transforms in spherical coords.  Set them.
         if (ctf == "null" || ctf == "exp") {
-            pin->SetReal("parthenon/mesh", "x2min", 0.0);
-            pin->SetReal("parthenon/mesh", "x2max", M_PI);
-            pin->SetReal("parthenon/mesh", "x3min", 0.0);
-            pin->SetReal("parthenon/mesh", "x3max", 2*M_PI);
+            pin->SetPrecise("parthenon/mesh", "x2min", 0.0);
+            pin->SetPrecise("parthenon/mesh", "x2max", M_PI);
+            pin->SetPrecise("parthenon/mesh", "x3min", 0.0);
+            pin->SetPrecise("parthenon/mesh", "x3max", 2*M_PI);
         } else if (ctf == "modified" || ctf == "funky") {
-            pin->SetReal("parthenon/mesh", "x2min", 0.0);
-            pin->SetReal("parthenon/mesh", "x2max", 1.0);
-            pin->SetReal("parthenon/mesh", "x3min", 0.0);
-            pin->SetReal("parthenon/mesh", "x3max", 2*M_PI);
+            pin->SetPrecise("parthenon/mesh", "x2min", 0.0);
+            pin->SetPrecise("parthenon/mesh", "x2max", 1.0);
+            pin->SetPrecise("parthenon/mesh", "x3min", 0.0);
+            pin->SetPrecise("parthenon/mesh", "x3max", 2*M_PI);
         } // TODO any other transforms/systems
     } else {
         pin->SetBoolean("coordinates", "spherical", false);
@@ -220,8 +220,8 @@ Packages_t KHARMA::ProcessPackages(std::unique_ptr<ParameterInput>& pin)
     bool do_emhd = pin->GetOrAddBoolean("emhd", "on", false);
     bool do_wind = pin->GetOrAddBoolean("wind", "on", false);
 
-    // Set the default driver way up here so packages know how to flag
-    // prims vs cons (imex stepper syncs prims, but packages have to mark them that way)
+    // Set the default driver all the way up here, so packages know how to flag
+    // prims vs cons (imex stepper syncs prims, but it's the packages' job to mark them)
     std::string driver_type;
     if (do_emhd) {
         // Default to implicit step for EMHD
@@ -333,7 +333,7 @@ void KHARMA::PostStepMeshUserWorkInLoop(Mesh *pmesh, ParameterInput *pin, const 
     // ctop_max has fewer rules. It's just convenient to set here since we're assured of no MPI hangs
     // Since it involves an MPI sync, we only keep track of this when we need it
     if (pmesh->packages.AllPackages().count("B_CD")) {
-        Real ctop_max_last = MPIMax(pmesh->packages.Get("Globals")->Param<Real>("ctop_max"));
+        Real ctop_max_last = MPIReduce(pmesh->packages.Get("Globals")->Param<Real>("ctop_max"), MPI_MAX);
         pmesh->packages.Get("Globals")->UpdateParam<Real>("ctop_max_last", ctop_max_last);
         pmesh->packages.Get("Globals")->UpdateParam<Real>("ctop_max", 0.0);
     }
@@ -354,20 +354,15 @@ void KHARMA::PostStepDiagnostics(Mesh *pmesh, ParameterInput *pin, const SimTime
 void KHARMA::FillOutput(MeshBlock *pmb, ParameterInput *pin)
 {
     Flag("Filling output");
-    // Don't fill the output arrays for the first dump, as trying to actually
-    // calculate them can produce errors when we're not in the loop yet.
-    // Instead, they just get added to the file as their starting values, i.e. 0
-    if (pmb->packages.Get("Globals")->Param<bool>("in_loop")) {
-        // TODO for package in packages with registered function...
-        if (pmb->packages.AllPackages().count("Current"))
-            Current::FillOutput(pmb, pin);
-        if (pmb->packages.AllPackages().count("B_FluxCT"))
-            B_FluxCT::FillOutput(pmb, pin);
-        if (pmb->packages.AllPackages().count("B_CD"))
-            B_CD::FillOutput(pmb, pin);
-        if (pmb->packages.AllPackages().count("Electrons"))
-            Electrons::FillOutput(pmb, pin);
-    }
+    // Rewrite this and the above as a callback registration
+    if (pmb->packages.AllPackages().count("Current"))
+        Current::FillOutput(pmb, pin);
+    if (pmb->packages.AllPackages().count("B_FluxCT"))
+        B_FluxCT::FillOutput(pmb, pin);
+    if (pmb->packages.AllPackages().count("B_CD"))
+        B_CD::FillOutput(pmb, pin);
+    if (pmb->packages.AllPackages().count("Electrons"))
+        Electrons::FillOutput(pmb, pin);
     Flag("Filled");
 }
 

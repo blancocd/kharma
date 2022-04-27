@@ -46,6 +46,7 @@ u_jitter = 0.04
 <b_field>
 type = sane
 beta_min = 100.
+initial_cleanup = true
 
 <floors>
 rho_min_geom = 1e-6
@@ -73,7 +74,6 @@ variables = prims.rho, prims.u, prims.uvec, prims.B, jcon, fflag, pflag
 <parthenon/output1>
 file_type = rst
 dt = 100.0
-ghost_zones = true
 
 <parthenon/output2>
 file_type = hst

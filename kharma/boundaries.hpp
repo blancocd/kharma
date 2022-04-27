@@ -1,4 +1,36 @@
-//
+/* 
+ *  File: boundaries.hpp
+ *  
+ *  BSD 3-Clause License
+ *  
+ *  Copyright (c) 2020, AFD Group at UIUC
+ *  All rights reserved.
+ *  
+ *  Redistribution and use in source and binary forms, with or without
+ *  modification, are permitted provided that the following conditions are met:
+ *  
+ *  1. Redistributions of source code must retain the above copyright notice, this
+ *     list of conditions and the following disclaimer.
+ *  
+ *  2. Redistributions in binary form must reproduce the above copyright notice,
+ *     this list of conditions and the following disclaimer in the documentation
+ *     and/or other materials provided with the distribution.
+ *  
+ *  3. Neither the name of the copyright holder nor the names of its
+ *     contributors may be used to endorse or promote products derived from
+ *     this software without specific prior written permission.
+ *  
+ *  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ *  AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ *  IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ *  DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+ *  FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ *  DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ *  SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ *  CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+ *  OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ *  OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
 #pragma once
 
 #include "decs.hpp"
@@ -6,6 +38,14 @@
 #include "bondi.hpp"
 #include "grmhd_functions.hpp"
 
+/**
+ * Any functions related to KHARMA's treatment of boundary conditions.
+ * These largely build on/fill in Parthenon's boundary functions,
+ * which KHARMA uses to handle all MPI & periodic boundaries.
+ * 
+ * Thus this Namespace is for outflow, reflecting, and problem-specific
+ * bounds, which KHARMA has to handle separately from Parthenon.
+ */
 namespace KBoundaries {
 
 /**
@@ -29,6 +69,12 @@ void OuterX2(std::shared_ptr<MeshBlockData<Real>> &rc, bool coarse);
 TaskStatus FixFlux(MeshData<Real> *rc);
 
 /**
+ * Single call to sync all boundary conditions.
+ * Used anytime boundary sync is needed outside the usual loop of steps.
+ */
+void SyncAllBounds(Mesh *pmesh, bool sync_prims, bool sync_phys=true);
+
+/**
  * Check for flow into simulation and reset velocity to eliminate it
  * TODO does Parthenon do something like this for outflow bounds already?
  *
@@ -50,15 +96,15 @@ KOKKOS_INLINE_FUNCTION void check_inflow(const GRCoordinates &G, const VariableP
         // Reset radial velocity so radial 4-velocity is zero
         Real alpha = 1. / sqrt(-G.gcon(Loci::center, j, i, 0, 0));
         Real beta1 = G.gcon(Loci::center, j, i, 0, 1) * alpha * alpha;
-        uvec[0] = beta1 / alpha;
+        uvec[V1] = beta1 / alpha;
 
         // Now find new gamma and put it back in
-        Real vsq = G.gcov(Loci::center, j, i, 1, 1) * uvec[0] * uvec[0] +
-                   G.gcov(Loci::center, j, i, 2, 2) * uvec[1] * uvec[1] +
-                   G.gcov(Loci::center, j, i, 3, 3) * uvec[2] * uvec[2] +
-        2. * (G.gcov(Loci::center, j, i, 1, 2) * uvec[0] * uvec[1] +
-              G.gcov(Loci::center, j, i, 1, 3) * uvec[0] * uvec[2] +
-              G.gcov(Loci::center, j, i, 2, 3) * uvec[1] * uvec[2]);
+        Real vsq = G.gcov(Loci::center, j, i, 1, 1) * uvec[V1] * uvec[V1] +
+                   G.gcov(Loci::center, j, i, 2, 2) * uvec[V2] * uvec[V2] +
+                   G.gcov(Loci::center, j, i, 3, 3) * uvec[V3] * uvec[V3] +
+        2. * (G.gcov(Loci::center, j, i, 1, 2) * uvec[V1] * uvec[V2] +
+              G.gcov(Loci::center, j, i, 1, 3) * uvec[V1] * uvec[V3] +
+              G.gcov(Loci::center, j, i, 2, 3) * uvec[V2] * uvec[V3]);
 
         clip(vsq, 1.e-13, 1. - 1./(50.*50.));
 

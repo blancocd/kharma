@@ -43,10 +43,11 @@ NPROC=
 
 # Less common options:
 # PREFIX_PATH=
-EXTRA_FLAGS="-lfftw3 -lm"
+export CXXFLAGS="-lfftw3 -lm"
 
 HOST=$(hostname -f)
 ARGS="$*"
+SOURCE_DIR=$(dirname "$(readlink -f "$0")")
 for machine in machines/*.sh
 do
   source $machine
@@ -75,9 +76,6 @@ fi
 if [[ -v DEVICE_ARCH ]]; then
   EXTRA_FLAGS="-DKokkos_ARCH_${DEVICE_ARCH}=ON $EXTRA_FLAGS"
 fi
-if [[ -v PREFIX_PATH ]]; then
-  EXTRA_FLAGS="-DCMAKE_PREFIX_PATH=$PREFIX_PATH $EXTRA_FLAGS"
-fi
 if [[ "$ARGS" == *"trace"* ]]; then
   EXTRA_FLAGS="-DTRACE=1 $EXTRA_FLAGS"
 fi
@@ -88,8 +86,10 @@ if [[ "$(which python3 2>/dev/null)" == *"conda"* ]]; then
   echo "Anaconda forces a serial version of HDF5 which may make this compile impossible."
   echo "If you run into trouble, deactivate your environment with 'conda deactivate'"
 fi
-# Save arguments
-echo "$ARGS" > make_args
+# Save arguments if we've changed them
+if [[ "$ARGS" == *"clean"* ]]; then
+  echo "$ARGS" > $SOURCE_DIR/make_args
+fi
 # Choose configuration
 if [[ "$ARGS" == *"debug"* ]]; then
   TYPE=Debug
@@ -100,17 +100,20 @@ fi
 ### Build HDF5 ###
 if [[ "$ARGS" == *"hdf5"* ]]; then
   cd external
-  if [ ! -f hdf5-* ]; then
-    wget https://hdf-wordpress-1.s3.amazonaws.com/wp-content/uploads/manual/HDF5/HDF5_1_12_0/source/hdf5-1.12.0.tar.gz
-    tar xf hdf5-1.12.0.tar.gz
-  fi
+  rm -rf hdf5*
+  curl https://hdf-wordpress-1.s3.amazonaws.com/wp-content/uploads/manual/HDF5/HDF5_1_12_0/source/hdf5-1.12.0.tar.gz -o hdf5.tar.gz
+  tar xf hdf5.tar.gz
   cd hdf5-1.12.0/
-  make clean
-  CC=mpicc ./configure --enable-parallel --prefix=$PWD/../hdf5
+  if [[ "$ARGS" == *"icc"* ]]; then
+    CC=mpiicc sh configure --enable-parallel --prefix=$PWD/../hdf5
+  else
+    CC=mpicc sh configure --enable-parallel --prefix=$PWD/../hdf5
+  fi
+  wait 1
   make -j$NPROC
   make install
   make clean
-  exit
+  cd ../..
 fi
 
 ### Build KHARMA ###
@@ -118,22 +121,15 @@ SCRIPT_DIR=$( dirname "$0" )
 cd $SCRIPT_DIR
 SCRIPT_DIR=$PWD
 
-# Strongly prefer icc for OpenMP compiles
-# I would try clang but it would break all Macs
+# Try to load icc > default/Cray CC > IBM XLC > GCC
+# Generally best to set CXX_NATIVE if you want a particular one
 if [[ -z "$CXX_NATIVE" ]]; then
-  if which icpx >/dev/null 2>&1; then
-    CXX_NATIVE=icpx
-    C_NATIVE=icx
-  elif which icpc >/dev/null 2>&1; then
+  if which icpc >/dev/null 2>&1; then
     CXX_NATIVE=icpc
     C_NATIVE=icc
-    # Avoid warning on nvcc pragmas Intel doesn't like
-    export CXXFLAGS="-Wno-unknown-pragmas $CXXFLAGS"
-    #export CFLAGS="-qopenmp"
   elif which CC >/dev/null 2>&1; then
     CXX_NATIVE=CC
     C_NATIVE=cc
-    #export CXXFLAGS="-Wno-unknown-pragmas" # TODO if Cray->Intel in --version
   elif which xlC >/dev/null 2>&1; then
     CXX_NATIVE=xlC
     C_NATIVE=xlc
@@ -160,6 +156,7 @@ if [[ "$ARGS" == *"sycl"* ]]; then
 elif [[ "$ARGS" == *"hip"* ]]; then
   export CXX=hipcc
   # Is there a hipc?
+  export CC="$C_NATIVE"
   OUTER_LAYOUT="MANUAL1D_LOOP"
   INNER_LAYOUT="TVR_INNER_LOOP"
   ENABLE_OPENMP="ON"
@@ -169,13 +166,12 @@ elif [[ "$ARGS" == *"hip"* ]]; then
 elif [[ "$ARGS" == *"cuda"* ]]; then
   export CC="$C_NATIVE"
   export CXX="$SCRIPT_DIR/bin/nvcc_wrapper"
-  export NVCC_WRAPPER_DEFAULT_COMPILER="$CXX_NATIVE"
   if [[ "$ARGS" == *"dryrun"* ]]; then
     export CXXFLAGS="-dryrun $CXXFLAGS"
     echo "Dry-running with $CXXFLAGS"
   fi
   export NVCC_WRAPPER_DEFAULT_COMPILER="$CXX_NATIVE"
-  # I've occasionally needed this. CUDA version thing?
+  # Generally Kokkos sets this, so we don't need to
   #export CXXFLAGS="--expt-relaxed-constexpr $CXXFLAGS"
   OUTER_LAYOUT="MANUAL1D_LOOP"
   INNER_LAYOUT="TVR_INNER_LOOP"
@@ -203,11 +199,18 @@ else
   ENABLE_HIP="OFF"
 fi
 
-# 
+# Allow for a custom linker program, but use CXX by default
 if [[ -v LINKER ]]; then
   LINKER="$LINKER"
 else
   LINKER="$CXX"
+fi
+
+# Avoid warning on nvcc pragmas Intel doesn't like
+# TODO also add this if we're using Cray cc -> icc
+# TODO is this necessary for icpx?
+if [[ $CXX == "icpc" ]]; then
+  export CXXFLAGS="-Wno-unknown-pragmas $CXXFLAGS"
 fi
 
 # Make build dir. Recall "clean" means "clean and build"
@@ -224,7 +227,7 @@ if [[ "$ARGS" == *"clean"* ]]; then
     -DCMAKE_CXX_COMPILER="$CXX" \
     -DCMAKE_LINKER="$LINKER" \
     -DCMAKE_CXX_LINK_EXECUTABLE='<CMAKE_LINKER> <FLAGS> <CMAKE_CXX_LINK_FLAGS> <LINK_FLAGS> <OBJECTS> -o <TARGET> <LINK_LIBRARIES>' \
-    -DCMAKE_PREFIX_PATH="$PREFIX_PATH:$CMAKE_PREFIX_PATH" \
+    -DCMAKE_PREFIX_PATH="$PREFIX_PATH;$CMAKE_PREFIX_PATH" \
     -DCMAKE_BUILD_TYPE=$TYPE \
     -DPAR_LOOP_LAYOUT=$OUTER_LAYOUT \
     -DPAR_LOOP_INNER_LAYOUT=$INNER_LAYOUT \

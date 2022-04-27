@@ -39,9 +39,11 @@
 // For a bunch of utility functions
 #include "b_flux_ct.hpp"
 
+#include "boundaries.hpp"
 #include "decs.hpp"
 #include "grmhd.hpp"
 #include "kharma.hpp"
+#include "mpi.hpp"
 
 using namespace parthenon;
 
@@ -71,7 +73,7 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin, Packages_t pack
     Real abs_tolerance = pin->GetOrAddReal("b_cleanup", "abs_tolerance", 1e-11);
     params.Add("abs_tolerance", abs_tolerance);
     // TODO why does this need to be so large?
-    Real sor_factor = pin->GetOrAddReal("b_cleanup", "sor_factor", 10);
+    Real sor_factor = pin->GetOrAddReal("b_cleanup", "sor_factor", 10.);
     params.Add("sor_factor", sor_factor);
     int max_iterations = pin->GetOrAddInteger("b_cleanup", "max_iterations", 1e8);
     params.Add("max_iterations", max_iterations);
@@ -158,10 +160,10 @@ void CleanupDivergence(std::shared_ptr<MeshData<Real>>& md)
 {
     Flag(md.get(), "Cleaning up divB");
     // Local Allreduce values since we're just calling things
-    AllReduce<Real> update_norm, divB_norm, divB_max;
-    AllReduce<Real> P_norm;
+    AllReduce<Real> update_norm, divB_norm, divB_max, P_norm;
 
-    auto pkg = md->GetMeshPointer()->packages.Get("B_Cleanup");
+    auto pmesh = md->GetMeshPointer();
+    auto pkg = pmesh->packages.Get("B_Cleanup");
     auto max_iters = pkg->Param<int>("max_iterations");
     auto check_interval = pkg->Param<int>("check_interval");
     auto rel_tolerance = pkg->Param<Real>("rel_tolerance");
@@ -169,49 +171,55 @@ void CleanupDivergence(std::shared_ptr<MeshData<Real>>& md)
     auto fail_flag = pkg->Param<bool>("fail_without_convergence");
     auto warn_flag = pkg->Param<bool>("warn_without_convergence");
     auto verbose = pkg->Param<int>("verbose");
+    bool sync_prims = pmesh->packages.Get("GRMHD")->Param<std::string>("driver_type") == "imex";
 
     if (MPIRank0() && verbose > 0) {
-        std::cout << "Cleaning divB" << std::endl;
+        std::cout << "Cleaning divB to relative tolerance " << rel_tolerance;
+        std::cout << " and absolute tolerance " << abs_tolerance << std::endl;
+        if (warn_flag) std::cout << "Convergence failure will produce a warning." << std::endl;
+        if (fail_flag) std::cout << "Convergence failure will produce an error." << std::endl;
     }
 
     // Calculate existing divB max & sum for checking relative error later
     divB_max.val = 0.;
     B_FluxCT::MaxDivBTask(md.get(), divB_max.val);
     divB_max.StartReduce(MPI_MAX);
-    divB_max.CheckReduce();
 
     divB_norm.val = 0.;
     B_Cleanup::CalcSumDivB(md.get(), divB_norm.val);
     divB_norm.StartReduce(MPI_SUM);
-    divB_norm.CheckReduce();
+
+    // Wait on results
+    while (divB_max.CheckReduce() == TaskStatus::incomplete);
+    while (divB_norm.CheckReduce() == TaskStatus::incomplete);
 
     if (MPIRank0() && verbose > 0) {
         std::cout << "Starting divB max is " << divB_max.val << " and sum is " << divB_norm.val << std::endl;
     }
+    // These two aren't *strictly* comparable, but we're unlikely to do any good if this is true
+    if (divB_max.val < abs_tolerance) {
+        std::cout << "Starting divB is within tolerance, exiting." << std::endl;
+        return;
+    }
+
+    // TODO Unmark everything but P as FillGhost, for efficiency. Re-mark before last sync
+    // auto vars = rc->GetVariablesByFlag(std::vector<MetadataFlag>({isImplicit, flag}), true).labels();
+    // for (auto& var : vars) {
+    //     // etc
+    // }
 
     // set P = divB as guess
     B_Cleanup::InitP(md.get());
 
-    bool converged = false;
+    bool is_converged = false;
     int iter = 0;
-    while ( (!converged) && (iter < max_iters) ) {
-        // Start syncing bounds
-        md.get()->StartReceiving(BoundaryCommSubset::all);
-
+    while ( (!is_converged) && (iter < max_iters) ) {
         // Update our guess at the potential 
         B_Cleanup::UpdateP(md.get());
 
         // Boundary sync. We really only need p syncd here...
-        cell_centered_bvars::SendBoundaryBuffers(md);
-        cell_centered_bvars::ReceiveBoundaryBuffers(md);
-        cell_centered_bvars::SetBoundaries(md);
-        md.get()->ClearBoundary(BoundaryCommSubset::all);
-
-        // And set physical boundaries
-        // for (auto &pmb : md->GetMeshPointer()->block_list) {
-        //     auto& rc = pmb->meshblock_data.Get();
-        //     parthenon::ApplyBoundaryConditions(rc);
-        // }
+        // Last option prevents updating physical boundaries, which we want to *solve* instead
+        KBoundaries::SyncAllBounds(pmesh, sync_prims, false);
 
         if (iter % check_interval == 0) {
             Flag("Iteration:");
@@ -219,24 +227,24 @@ void CleanupDivergence(std::shared_ptr<MeshData<Real>>& md)
             update_norm.val = 0.;
             B_Cleanup::SumError(md.get(), update_norm.val);
             update_norm.StartReduce(MPI_SUM);
-            update_norm.CheckReduce();
             // P_norm.val = 0.;
             // B_Cleanup::SumP(md.get(), P_norm.val);
             // P_norm.StartReduce(MPI_SUM);
-            // P_norm.CheckReduce();
             divB_max.val = 0.;
             MaxError(md.get(), divB_max.val);
             divB_max.StartReduce(MPI_MAX);
-            divB_max.CheckReduce();
+            // Wait on both reductions to move on
+            while (update_norm.CheckReduce() == TaskStatus::incomplete);
+            //while (P_norm.CheckReduce() == TaskStatus::incomplete);
+            while (divB_max.CheckReduce() == TaskStatus::incomplete);
             if (MPIRank0()) {
                 std::cout << "divB step " << iter << " total relative error is " << update_norm.val / divB_norm.val
                         << " Max absolute error is " << divB_max.val << std::endl;
                 // std::cout << "P norm is " << P_norm.val << std::endl;
             }
 
-            // Both these values are already MPI reduced, but we want to make sure
-            converged = (update_norm.val / divB_norm.val < rel_tolerance) && (divB_max.val < abs_tolerance);
-            converged = MPIMin(converged);
+            // This behaves identically on ranks, unless we've broken a fundamental assumption
+            is_converged = (update_norm.val / divB_norm.val < rel_tolerance) && (divB_max.val < abs_tolerance);
         }
 
         iter++;
@@ -253,14 +261,16 @@ void CleanupDivergence(std::shared_ptr<MeshData<Real>>& md)
         std::cout << "Applying magnetic field correction" << std::endl;
     }
 
-    // Update the magnetic field with one damped Jacobi step
+    // Update the magnetic field on physical zones using our solution
     B_Cleanup::ApplyP(md.get());
+    // Synchronize to update ghost zones
+    KBoundaries::SyncAllBounds(pmesh, sync_prims);
 
-    // Recalculate divB max to reassure
+    // Recalculate divB max for one last check
     divB_max.val = 0.;
     B_FluxCT::MaxDivBTask(md.get(), divB_max.val);
     divB_max.StartReduce(MPI_MAX);
-    divB_max.CheckReduce();
+    while (divB_max.CheckReduce() == TaskStatus::incomplete);
 
     if (MPIRank0()) {
         std::cout << "Final divB max is " << divB_max.val << std::endl;
@@ -324,7 +334,7 @@ TaskStatus InitP(MeshData<Real> *md)
 
 TaskStatus UpdateP(MeshData<Real> *md)
 {
-    //Flag(md, "Updating P");
+    Flag(md, "Updating P");
     auto pmesh = md->GetParentPointer();
     const int ndim = pmesh->ndim;
     const IndexRange ib = md->GetBoundsI(IndexDomain::entire);
@@ -387,6 +397,7 @@ TaskStatus UpdateP(MeshData<Real> *md)
         }
     );
 
+    Flag("Updated");
     return TaskStatus::complete;
 }
 

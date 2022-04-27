@@ -46,13 +46,12 @@
 #include "boundaries.hpp"
 #include "current.hpp"
 #include "debug.hpp"
-#include "fixup.hpp"
 #include "floors.hpp"
 #include "flux.hpp"
 #include "gr_coordinates.hpp"
+#include "grmhd.hpp"
 #include "kharma.hpp"
 #include "grmhd_functions.hpp"
-#include "source.hpp"
 #include "U_to_P.hpp"
 
 using namespace parthenon;
@@ -106,11 +105,11 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin, Packages_t pack
     // These parameters are put in "parthenon/time" to match others, but ultimately we should
     // override the parthenon timestep chooser
     // Minimum timestep, if something about the sound speed goes wonky. Probably won't save you :)
-    double dt_min = pin->GetOrAddReal("parthenon/time", "dt_min", 1.e-5);
+    double dt_min = pin->GetOrAddPrecise("parthenon/time", "dt_min", 1.e-5);
     params.Add("dt_min", dt_min);
     // Starting timestep: guaranteed step 1 timestep returned by EstimateTimestep,
     // usually matters most for restarts
-    double dt_start = pin->GetOrAddReal("parthenon/time", "dt", dt_min);
+    double dt_start = pin->GetOrAddPrecise("parthenon/time", "dt", dt_min);
     params.Add("dt_start", dt_start);
     double max_dt_increase = pin->GetOrAddReal("parthenon/time", "max_dt_increase", 2.0);
     params.Add("max_dt_increase", max_dt_increase);
@@ -171,12 +170,10 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin, Packages_t pack
     auto implicit_grmhd = (driver_type == "imex") &&
                           (pin->GetBoolean("emhd", "on") || pin->GetOrAddBoolean("GRMHD", "implicit", false));
     params.Add("implicit", implicit_grmhd);
-
-    // Performance options
-    // Packed communications kernels, exchanging all boundary buffers of an MPI process
-    // together.  Useful if # MeshBlocks is > # MPI ranks
-    bool pack_comms = pin->GetOrAddBoolean("perf", "pack_comms", true);
-    params.Add("pack_comms", pack_comms);
+    // Synchronize boundary variables twice.  Ensures KHARMA is agnostic to the breakdown
+    // of meshblocks, at the cost of twice the MPI overhead, for potentially much worse strong scaling.
+    bool two_sync = pin->GetOrAddBoolean("perf", "two_sync", false);
+    params.Add("two_sync", two_sync);
 
     // Adaptive mesh refinement options
     // Only active if "refinement" and "numlevel" parameters allow
@@ -367,7 +364,7 @@ Real EstimateTimestep(MeshBlockData<Real> *rc)
             // Estimate based on light crossing time
             double dt = EstimateRadiativeTimestep(rc);
             // This records a per-rank minimum,
-            // but Parthenon calls MPIMin per-step anyway
+            // but Parthenon finds the global minimum anyway
             if (globals.hasKey("dt_light")) {
                 if (dt < globals.Get<double>("dt_light"))
                     globals.Update<double>("dt_light", dt);
