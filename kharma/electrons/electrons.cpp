@@ -339,7 +339,7 @@ TaskStatus ApplyElectronHeating(MeshBlockData<Real> *rc_old, MeshBlockData<Real>
             GRMHD::calc_4vecs(G, P, m_p, k, j, i, Loci::center, Dtmp);
             Real bsq = dot(Dtmp.bcon, Dtmp.bcov);
 
-            // Calculate the new total entropy in this cell
+            // Calculate the new total entropy in this cell considering heating
             const Real kNew = (gam-1.) * P_new(m_p.UU, k, j, i) / pow(P_new(m_p.RHO, k, j, i) ,gam);
 
             // Dissipation is the real entropy kNew minus any advected entropy from the previous (sub-)step P_new(KTOT)
@@ -347,7 +347,7 @@ TaskStatus ApplyElectronHeating(MeshBlockData<Real> *rc_old, MeshBlockData<Real>
             // Under the flag "suppress_highb_heat", we set all dissipation to zero at sigma > 1.
             const Real diss = (suppress_highb_heat && (bsq / P(m_p.RHO, k, j, i) > 1.)) ? 0.0 :
                                 max((game-1.) / (gam-1.) * pow(P(m_p.RHO, k, j, i), gam - game) * (kNew - P_new(m_p.KTOT, k, j, i)), 0.0);
-            //this is eq27                  ratio of heating: Qi/Qe                                    //advected entropy from prev step
+            //this is eq27                  ratio of heating: Qi/Qe                                   //advected entropy from prev step
 
             // Reset the entropy to measure next (sub-)step's dissipation
             P_new(m_p.KTOT, k, j, i) = kNew;
@@ -356,9 +356,9 @@ TaskStatus ApplyElectronHeating(MeshBlockData<Real> *rc_old, MeshBlockData<Real>
             // we cache the floors as entropy limits so they'll be cheaper to apply.
             // Note tp_te_min -> kel_max & vice versa
             const Real kel_max = P(m_p.KTOT, k, j, i) * pow(P(m_p.RHO, k, j, i), gam - game) /
-                                    (tptemin * (gam - 1.) / (gamp-1.) + (gam-1.) / (game-1.));
+                                    (tptemin * (gam - 1.) / (gamp-1.) + (gam-1.) / (game-1.)); //0.001
             const Real kel_min = P(m_p.KTOT, k, j, i) * pow(P(m_p.RHO, k, j, i), gam - game) /
-                                    (tptemax * (gam - 1.) / (gamp-1.) + (gam-1.) / (game-1.));
+                                    (tptemax * (gam - 1.) / (gamp-1.) + (gam-1.) / (game-1.)); //1000
             // Note this differs a little from Ressler '15, who ensure u_e/u_g > 0.01 rather than use temperatures
 
             // The ion temperature is useful for a few models, cache it too.
