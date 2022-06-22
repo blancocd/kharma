@@ -75,7 +75,7 @@ TaskStatus InitializeNoh(MeshBlockData<Real> *rc, ParameterInput *pin)
     const Real center = (x1min + x1max) / 2.;
 
     // TODO relativistic sound speed
-    Real cs2 = (gam * (gam - 1) * PL) / rhoL;
+    Real cs2 = (gam * (gam-1) * PL) / (rhoL + (gam * PL));
     Real v1 = mach * sqrt(cs2);
 
     if (set_tlim) {
