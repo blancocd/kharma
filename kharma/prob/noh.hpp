@@ -56,11 +56,8 @@ TaskStatus InitializeNoh(MeshBlockData<Real> *rc, ParameterInput *pin)
     const Real fel0 = pmb->packages.Get("Electrons")->Param<Real>("fel_0");
     const Real fel_constant = pmb->packages.Get("Electrons")->Param<Real>("fel_constant");
     
-    const Real mach = pin->GetOrAddReal("noh", "mach", 49);
-    const Real rhoL = pin->GetOrAddReal("noh", "rhoL", 1.0);
-    const Real rhoR = pin->GetOrAddReal("noh", "rhoR", 1.0);
-    const Real PL = pin->GetOrAddReal("noh", "PL", 0.1);
-    const Real PR = pin->GetOrAddReal("noh", "PR", 0.1);
+    const Real mach = pin->GetOrAddReal("noh", "mach", 49.);
+    const Real rho_usr = pin->GetOrAddReal("noh", "rho", 1.0);
     bool set_tlim = pin->GetOrAddBoolean("noh", "set_tlim", false);
 
     const auto& G = pmb->coords;
@@ -74,15 +71,14 @@ TaskStatus InitializeNoh(MeshBlockData<Real> *rc, ParameterInput *pin)
     const Real x1max = pin->GetReal("parthenon/mesh", "x1max");
     const Real center = (x1min + x1max) / 2.;
 
-    // TODO relativistic sound speed
-    Real cs2 = (gam * (gam-1) * PL) / (rhoL + (gam * PL));
-    Real v1 = mach * sqrt(cs2);
+    // Given Mach and knowing that v = 1e-3 and rho = 1, we calculate u
+    Real cs2 = (1.e-6)/pow(mach, 2);
+    double gamma = 1. / sqrt(1. - 1.e-6); // Since we are in flat space
+    Real P = rho_usr * cs2 / (gam*(gam-1) - cs2*gam);
 
     if (set_tlim) {
-        pin->SetPrecise("parthenon/time", "tlim", 0.6*(x1max - x1min)/v1);
+        pin->SetPrecise("parthenon/time", "tlim", 0.6*(x1max - x1min)/1.e-3);
     }
-
-    double gamma = 1. / sqrt(1. - v1 * v1); // Since we are in flat space
 
 
     pmb->par_for("noh_init", kb.s, kb.e, jb.s, jb.e, ib.s, ib.e,
@@ -91,9 +87,9 @@ TaskStatus InitializeNoh(MeshBlockData<Real> *rc, ParameterInput *pin)
             G.coord_embed(k, j, i, Loci::center, X);
 
             const bool lhs = X[1] < center;
-            rho(k, j, i) = (lhs) ? rhoL : rhoR;
-            u(k, j, i) = ((lhs) ? PL : PR)/(gam - 1.);
-            uvec(0, k, j, i) = ((lhs) ? v1 : -v1) * gamma;
+            rho(k, j, i) = rho_usr;
+            u(k, j, i) = P/(gam - 1.);
+            uvec(0, k, j, i) = ((lhs) ? 1.e-3 : -1.e-3) * gamma;
             uvec(1, k, j, i) = 0.0;
             uvec(2, k, j, i) = 0.0;
         }
