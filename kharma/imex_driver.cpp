@@ -227,7 +227,7 @@ TaskCollection ImexDriver::MakeTaskCollection(BlockList_t &blocks, int stage)
 
         // Make sure the primitive values of any explicit fields are filled
         auto t_explicit_UtoP_B = t_explicit_U;
-        if (!pkgs.at("B_FluxCT")->Param<bool>("implicit"))
+        if (use_b_flux_ct && !pkgs.at("B_FluxCT")->Param<bool>("implicit"))
             t_explicit_UtoP_B = tl.AddTask(t_explicit_U, B_FluxCT::FillDerivedMeshTask, mc_solver.get());
         // If GRMHD is not implicit, but we're still going to be taking an implicit step, call its FillDerived function
         // TODO Would be faster/more flexible if this supported MeshData. Also maybe race condition
