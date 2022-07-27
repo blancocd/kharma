@@ -62,7 +62,7 @@ TaskStatus InitializeNoh(MeshBlockData<Real> *rc, ParameterInput *pin)
 
     const auto& G = pmb->coords;
 
-    IndexDomain domain = IndexDomain::entire;
+    IndexDomain domain = IndexDomain::interior;
     IndexRange ib = pmb->cellbounds.GetBoundsI(domain);
     IndexRange jb = pmb->cellbounds.GetBoundsJ(domain);
     IndexRange kb = pmb->cellbounds.GetBoundsK(domain);
@@ -77,7 +77,7 @@ TaskStatus InitializeNoh(MeshBlockData<Real> *rc, ParameterInput *pin)
     Real P = rho_usr * cs2 / (gam*(gam-1) - cs2*gam);
 
     if (set_tlim) {
-        pin->SetPrecise("parthenon/time", "tlim", 0.6*(x1max - x1min)/1.e-3);
+        pin->SetReal("parthenon/time", "tlim", 0.6*(x1max - x1min)/1.e-3);
     }
 
 

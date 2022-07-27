@@ -105,11 +105,11 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin, Packages_t pack
     // These parameters are put in "parthenon/time" to match others, but ultimately we should
     // override the parthenon timestep chooser
     // Minimum timestep, if something about the sound speed goes wonky. Probably won't save you :)
-    double dt_min = pin->GetOrAddPrecise("parthenon/time", "dt_min", 1.e-5);
+    double dt_min = pin->GetOrAddReal("parthenon/time", "dt_min", 1.e-5);
     params.Add("dt_min", dt_min);
     // Starting timestep: guaranteed step 1 timestep returned by EstimateTimestep,
     // usually matters most for restarts
-    double dt_start = pin->GetOrAddPrecise("parthenon/time", "dt", dt_min);
+    double dt_start = pin->GetOrAddReal("parthenon/time", "dt", dt_min);
     params.Add("dt_start", dt_start);
     double max_dt_increase = pin->GetOrAddReal("parthenon/time", "max_dt_increase", 2.0);
     params.Add("max_dt_increase", max_dt_increase);
@@ -492,9 +492,10 @@ AmrTag CheckRefinement(MeshBlockData<Real> *rc)
     auto pmb = rc->GetBlockPointer();
     auto v = rc->Get("prims.rho").data;
 
-    IndexRange ib = pmb->cellbounds.GetBoundsI(IndexDomain::entire);
-    IndexRange jb = pmb->cellbounds.GetBoundsJ(IndexDomain::entire);
-    IndexRange kb = pmb->cellbounds.GetBoundsK(IndexDomain::entire);
+    IndexDomain domain = IndexDomain::interior;
+    IndexRange ib = pmb->cellbounds.GetBoundsI(domain);
+    IndexRange jb = pmb->cellbounds.GetBoundsJ(domain);
+    IndexRange kb = pmb->cellbounds.GetBoundsK(domain);
 
     typename Kokkos::MinMax<Real>::value_type minmax;
     pmb->par_reduce("check_refinement", kb.s, kb.e, jb.s, jb.e, ib.s, ib.e,
@@ -536,6 +537,7 @@ TaskStatus PostStepDiagnostics(const SimTime& tm, MeshData<Real> *md)
     // Check for a soundspeed (ctop) of 0 or NaN
     // This functions as a "last resort" check to stop a
     // simulation on obviously bad data
+    // TODO also be able to print what zone dictated timestep
     if (extra_checks >= 1) {
         CheckNaN(md, X1DIR);
         if (pmesh->ndim > 1) CheckNaN(md, X2DIR);
