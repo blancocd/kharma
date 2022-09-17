@@ -264,7 +264,7 @@ TaskStatus InitElectrons(MeshBlockData<Real> *rc, ParameterInput *pin)
             if (p == ktot_index) {
                 // Initialize total entropy by definition,
                 e_P(p, k, j, i) = (gam - 1.) * u(k, j, i) * pow(rho(k, j, i), -gam);
-            } else {
+            } else if (pmb->packages.Get("GRMHD")->Param<string>("problem") != "hubble") {
                 // and e- entropy by given constant initial fraction
                 e_P(p, k, j, i) = (game - 1.) * fel0 * u(k, j, i) * pow(rho(k, j, i), -game);
             }
@@ -454,11 +454,9 @@ TaskStatus ApplyElectronHeating(MeshBlockData<Real> *rc_old, MeshBlockData<Real>
     if (prob == "hubble") {
         const Real v0 = pmb->packages.Get("GRMHD")->Param<Real>("v0");
         const Real ug0 = pmb->packages.Get("GRMHD")->Param<Real>("ug0");
-        Real fcool = pmb->packages.Get("GRMHD")->Param<Real>("fcool");
         const Real t = pmb->packages.Get("Globals")->Param<Real>("time");
         const Real dt = pmb->packages.Get("Globals")->Param<Real>("dt_last");  // Close enough?
-        if (fcool == -1) fcool = 0;
-        Real Q = (ug0 * v0 * (gam - 2) / pow(1 + v0 * t, 3)) * fcool;
+        Real Q = (ug0 * v0 * (gam - 2) / pow(1 + v0 * t, 3));
 
         pmb->par_for("hubble_Q_source_term", kb.s, kb.e, jb.s, jb.e, ib.s, ib.e,
             KOKKOS_LAMBDA_3D {
