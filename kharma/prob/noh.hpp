@@ -51,7 +51,10 @@ TaskStatus InitializeNoh(MeshBlockData<Real> *rc, ParameterInput *pin)
     const Real gam = pmb->packages.Get("GRMHD")->Param<Real>("gamma");
     
     const Real mach = pin->GetOrAddReal("noh", "mach", 49.);
-    const Real rho_usr = pin->GetOrAddReal("noh", "rho", 1.0);
+    const Real rho0 = pin->GetOrAddReal("noh", "rho", 1.0);
+    const Real v0 = pin->GetOrAddReal("noh", "v0", 1.e-3);
+    bool zero_ug = pin->GetOrAddBoolean("noh", "zero_ug", false);
+    bool centered = pin->GetOrAddBoolean("noh", "centered", true);
     bool set_tlim = pin->GetOrAddBoolean("noh", "set_tlim", false);
 
     const Real x1min = pin->GetReal("parthenon/mesh", "x1min");
@@ -59,32 +62,45 @@ TaskStatus InitializeNoh(MeshBlockData<Real> *rc, ParameterInput *pin)
     const Real center = (x1min + x1max) / 2.;
 
     // Given Mach and knowing that v = 1e-3 and rho = 1, we calculate u
-    Real cs2 = (1.e-6)/pow(mach, 2);
-    double gamma = 1. / sqrt(1. - 1.e-6); // Since we are in flat space
-    Real P = rho_usr * cs2 / (gam*(gam-1) - cs2*gam);
+    Real cs2 = pow(v0, 2)/pow(mach, 2);
+    double gamma = 1. / sqrt(1. - pow(v0, 2)); // Since we are in flat space
+    Real P = rho0 * cs2 / (gam*(gam-1) - cs2*gam);
+    if (zero_ug) P = 0;
 
     if (set_tlim) {
-        pin->SetReal("parthenon/time", "tlim", 0.6*(x1max - x1min)/1.e-3);
+        pin->SetReal("parthenon/time", "tlim", 0.6*(x1max - x1min)/v0);
     }
 
     IndexDomain domain = IndexDomain::interior;
     IndexRange ib = pmb->cellbounds.GetBoundsI(domain);
     IndexRange jb = pmb->cellbounds.GetBoundsJ(domain);
     IndexRange kb = pmb->cellbounds.GetBoundsK(domain);
-    const auto& G = pmb->coords;
     pmb->par_for("noh_init", kb.s, kb.e, jb.s, jb.e, ib.s, ib.e,
         KOKKOS_LAMBDA_3D {
-            Real X[GR_DIM];
-            G.coord_embed(k, j, i, Loci::center, X);
-
-            const bool lhs = X[1] < center;
-            rho(k, j, i) = rho_usr;
+            rho(k, j, i) = rho0;
             u(k, j, i) = P/(gam - 1.);
-            uvec(0, k, j, i) = ((lhs) ? 1.e-3 : -1.e-3) * gamma;
             uvec(1, k, j, i) = 0.0;
             uvec(2, k, j, i) = 0.0;
         }
     );
+    const auto& G = pmb->coords;
+    if (centered) {
+        pmb->par_for("noh_cent", kb.s, kb.e, jb.s, jb.e, ib.s, ib.e,
+            KOKKOS_LAMBDA_3D {
+                Real X[GR_DIM];
+                G.coord_embed(k, j, i, Loci::center, X);
+                const bool lhs = X[1] < center;
+                uvec(0, k, j, i) = ((lhs) ? v0 : -v0) * gamma;
+            }
+        );
+    } else {
+        pmb->par_for("noh_left", kb.s, kb.e, jb.s, jb.e, ib.s, ib.e,
+            KOKKOS_LAMBDA_3D {
+                u(k, j, i) = P/(gam - 1.);
+                uvec(0, k, j, i) = -v0 * gamma;
+            }
+        );
+    }
 
     Flag(rc, "Initialized 1D (Noh) Shock test");
     return TaskStatus::complete;
