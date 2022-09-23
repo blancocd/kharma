@@ -261,7 +261,7 @@ TaskStatus InitElectrons(MeshBlockData<Real> *rc, ParameterInput *pin)
     int ks = pmb->cellbounds.ks(domain), ke = pmb->cellbounds.ke(domain);
     pmb->par_for("UtoP_electrons", 0, e_P.GetDim(4)-1, ks, ke, js, je, is, ie,
         KOKKOS_LAMBDA_VARS {
-            if (p == ktot_index) {
+            if (p == ktot_index) { // Initialize it even when using Hubble, it will be "erased" immediately after anyway in ApplyElectronHeating
                 // Initialize total entropy by definition,
                 e_P(p, k, j, i) = (gam - 1.) * u(k, j, i) * pow(rho(k, j, i), -gam);
             } else if (pmb->packages.Get("GRMHD")->Param<string>("problem") != "hubble") {
@@ -451,7 +451,8 @@ TaskStatus ApplyElectronHeating(MeshBlockData<Real> *rc_old, MeshBlockData<Real>
     // A couple of the electron test problems add source terms
     // TODO move this to dUdt with other source terms?
     const string prob = pmb->packages.Get("GRMHD")->Param<string>("problem");
-    if (prob == "hubble") {
+    // generate_grf applies operator splitting so that we only cool at the second step using the full time step dt
+    if (prob == "hubble" && pmb->packages.Get("GRMHD")->Param<bool>("cooling") && generate_grf) {
         const Real v0 = pmb->packages.Get("GRMHD")->Param<Real>("v0");
         const Real ug0 = pmb->packages.Get("GRMHD")->Param<Real>("ug0");
         const Real t = pmb->packages.Get("Globals")->Param<Real>("time");
