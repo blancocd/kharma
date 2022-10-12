@@ -46,6 +46,7 @@
 // Problem-specific boundaries
 #include "bondi.hpp"
 #include "hubble.hpp"
+#include "rest_conserve.hpp"
 
 // Going to need all modules' headers here
 #include "b_flux_ct.hpp"
@@ -228,6 +229,8 @@ void KBoundaries::InnerX1(std::shared_ptr<MeshBlockData<Real>> &rc, bool coarse)
     std::string prob = pmb->packages.Get("GRMHD")->Param<std::string>("problem");
     if (prob == "hubble") {
        SetHubble(rc.get(), IndexDomain::inner_x1, coarse);
+    } else if (prob == "rest_conserve") {
+       SetRest(rc.get(), IndexDomain::inner_x1, coarse);
     } else {
         OutflowX1(rc, IndexDomain::inner_x1, coarse);
     }
@@ -242,6 +245,8 @@ void KBoundaries::OuterX1(std::shared_ptr<MeshBlockData<Real>> &rc, bool coarse)
     std::string prob = pmb->packages.Get("GRMHD")->Param<std::string>("problem");
     if (prob == "hubble") {
        SetHubble(rc.get(), IndexDomain::outer_x1, coarse);
+    } else if (prob == "rest_conserve") {
+       SetRest(rc.get(), IndexDomain::inner_x1, coarse);
     } else if (prob == "bondi") {
         SetBondi(rc.get(), IndexDomain::outer_x1, coarse);
     } else {
