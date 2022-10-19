@@ -101,6 +101,13 @@ TaskCollection ImexDriver::MakeTaskCollection(BlockList_t &blocks, int stage)
 
     // Big synchronous region: get & apply fluxes to advance the fluid state
     // num_partitions is usually 1
+    // NOTE: Renamed state names to something more intuitive. 
+    // '_full_step_init' refers to the fluid state at the start of the full time step (Si in iharm3d)
+    // '_sub_step_init' refers to the fluid state at the start of the sub step (Ss in iharm3d)
+    // '_sub_step_final' refers to the fluid state at the end of the sub step (Sf in iharm3d)
+    // '_flux_src' refers to the mesh object corresponding to -divF + S
+    // '_solver' refers to the fluid state passed to the Implicit solver. At the end of the solve
+    // copy P and U from solver state to sub_step_final state.
     const int num_partitions = pmesh->DefaultNumPartitions();
     TaskRegion &single_tasklist_per_pack_region = tc.AddRegion(num_partitions);
     for (int i = 0; i < num_partitions; i++) {
@@ -181,7 +188,7 @@ TaskCollection ImexDriver::MakeTaskCollection(BlockList_t &blocks, int stage)
         // ADD EXPLICIT SOURCES TO CONSERVED VARIABLES
         // Source term for GRMHD, \Gamma * T
         // TODO take this out in Minkowski space
-        auto t_grmhd_source = tl.AddTask(t_flux_div, GRMHD::AddSource, mc0.get(), mdudt.get());
+        auto t_grmhd_source = tl.AddTask(t_flux_div, GRMHD::AddSource, mc0.get(), mdudt.get(), stage == 1);
         // Source term for constraint-damping.  Applied only to B
         auto t_b_cd_source = t_grmhd_source;
         if (use_b_cd) {
@@ -216,14 +223,17 @@ TaskCollection ImexDriver::MakeTaskCollection(BlockList_t &blocks, int stage)
         // These calls are the equivalent of what's in HARMDriver
         // auto t_average = tl.AddTask(t_sources, Update::WeightedSumData<MetadataFlag, MeshData<Real>>,
         //                             std::vector<MetadataFlag>({isExplicit, Metadata::Independent}),
-        //                             mc0.get(), mbase.get(), beta, (1.0 - beta), mc_solver.get());
+// mc_solver=beta*mc0+(1-beta)*mbase;  mc0.get(), mbase.get(), beta, (1.0 - beta), mc_solver.get());
+
         // auto t_explicit_U = tl.AddTask(t_average, Update::WeightedSumData<MetadataFlag, MeshData<Real>>,
         //                             std::vector<MetadataFlag>({isExplicit, Metadata::Independent}),
-        //                             mc_solver.get(), mdudt.get(), 1.0, beta * dt, mc_solver.get());
+// mc_solver += beta*dt*mdudt;         mc_solver.get(), mdudt.get(), 1.0, beta * dt, mc_solver.get());
         // Version with half/whole step to match implicit solver
+// mc_solver = beta*mc0 + (1-beta)*mbase + beta*dt*mdudt;
+// suggests mc0 == mbase??
         auto t_explicit_U = tl.AddTask(t_sources, Update::WeightedSumData<MetadataFlag, MeshData<Real>>,
                                     std::vector<MetadataFlag>({isExplicit, Metadata::Independent}),
-                                    mbase.get(), mdudt.get(), 1.0, dt_this, mc_solver.get());
+/* mc_solver = mbase + dt_this*mdudt; */ mbase.get(), mdudt.get(), 1.0, dt_this, mc_solver.get());
 
         // Make sure the primitive values of any explicit fields are filled
         auto t_explicit_UtoP_B = t_explicit_U;
@@ -245,7 +255,7 @@ TaskCollection ImexDriver::MakeTaskCollection(BlockList_t &blocks, int stage)
         auto t_copy_guess = tl.AddTask(t_sources, Update::WeightedSumData<MetadataFlag, MeshData<Real>>,
                                     std::vector<MetadataFlag>({isImplicit}),
                                     mc0.get(), mc0.get(), 1.0, 0.0, mc_solver.get());
-
+                                    /* mc_solver = mc0; */ 
         // Time-step implicit variables by root-finding the residual
         // This applies the functions of both the update above and FillDerived call below for "isImplicit" variables
         // This takes dt for the *substep*, not the whole thing, so we multiply total dt by *this step's* beta
@@ -255,7 +265,7 @@ TaskCollection ImexDriver::MakeTaskCollection(BlockList_t &blocks, int stage)
         // Copy the solver state into the final state mc1
         auto t_copy_result = tl.AddTask(t_implicit, Update::WeightedSumData<MetadataFlag, MeshData<Real>>, std::vector<MetadataFlag>({}),
                                         mc_solver.get(), mc_solver.get(), 1.0, 0.0, mc1.get());
-
+                                        /* mc_1 = mc_solver; */ 
         // If evolving GRMHD explicitly, U_to_P needs a guess in order to converge, so we copy in mc0
         auto t_copy_prims = t_none;
         if (!pkgs.at("GRMHD")->Param<bool>("implicit")) {
@@ -264,6 +274,7 @@ TaskCollection ImexDriver::MakeTaskCollection(BlockList_t &blocks, int stage)
             auto t_copy_prims = tl.AddTask(t_none, Update::WeightedSumData<MetadataFlag, MeshData<Real>>,
                                         std::vector<MetadataFlag>({isHD, isPrimitive}),
                                         mc0.get(), mc0.get(), 1.0, 0.0, mc1.get());
+                                        /* mc_1 = mc0; */ 
         }
 
     }

@@ -449,32 +449,8 @@ TaskStatus ApplyElectronHeating(MeshBlockData<Real> *rc_old, MeshBlockData<Real>
     );
 
     // A couple of the electron test problems add source terms
-    // TODO move this to dUdt with other source terms?
     const string prob = pmb->packages.Get("GRMHD")->Param<string>("problem");
-    // generate_grf applies operator splitting so that we only cool at the second step using the full time step dt
-    if (prob == "hubble" && pmb->packages.Get("GRMHD")->Param<bool>("cooling") && generate_grf) {
-        const Real v0 = pmb->packages.Get("GRMHD")->Param<Real>("v0");
-        const Real ug0 = pmb->packages.Get("GRMHD")->Param<Real>("ug0");
-        const Real dt = pmb->packages.Get("Globals")->Param<Real>("dt_last");  // Close enough?
-        const Real t = pmb->packages.Get("Globals")->Param<Real>("time") + dt;
-        Real Q = (ug0 * v0 * (gam - 2) / pow(1 + v0 * t, 3));
-        pmb->par_for("hubble_Q_source_term", kb.s, kb.e, jb.s, jb.e, ib.s, ib.e,
-            KOKKOS_LAMBDA_3D {
-                P_new(m_p.UU, k, j, i) += Q * dt;
-                // TODO all flux
-                GRMHD::p_to_u(G, P_new, m_p, gam, k, j, i, U_new, m_u);
-            }
-        );
-    } else if (prob == "rest_conserve" && pmb->packages.Get("GRMHD")->Param<Real>("q") != 0. && generate_grf) {
-        const Real dt = pmb->packages.Get("Globals")->Param<Real>("dt_last");  // Close enough?
-        const Real Q = pmb->packages.Get("GRMHD")->Param<Real>("q");
-         pmb->par_for("rest_conserve_Q_source_term", kb.s, kb.e, jb.s, jb.e, ib.s, ib.e,
-            KOKKOS_LAMBDA_3D {
-                P_new(m_p.UU, k, j, i) += Q * dt;
-                GRMHD::p_to_u(G, P_new, m_p, gam, k, j, i, U_new, m_u);
-            }
-        );
-    } else if (prob == "driven_turbulence") { // Gaussian random field:
+    if (prob == "driven_turbulence") { // Gaussian random field:
         const auto& G = pmb->coords;
         const IndexRange myib = pmb->cellbounds.GetBoundsI(IndexDomain::interior);
         const IndexRange myjb = pmb->cellbounds.GetBoundsJ(IndexDomain::interior);
