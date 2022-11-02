@@ -82,12 +82,16 @@ TaskCollection ImexDriver::MakeTaskCollection(BlockList_t &blocks, int stage)
     bool use_emhd = pkgs.count("EMHD");
 
     // Allocate the fluid states ("containers") we need for each block
+    TaskRegion &async_region0 = tc.AddRegion(blocks.size());
     for (int i = 0; i < blocks.size(); i++) {
         auto &pmb = blocks[i];
+        auto &tl = async_region0[i];
         // first make other useful containers
         auto &base = pmb->meshblock_data.Get();
         if (stage == 1) {
             pmb->meshblock_data.Add("dUdt", base);
+            auto t_heating_test = tl.AddTask(t_none, Electrons::ApplyHeatingSubstep, base.get());
+            auto t_u_to_p = tl.AddTask(t_heating_test, Flux::PtoU, base.get(), IndexDomain::entire);
             for (int i = 1; i < integrator->nstages; i++)
                 pmb->meshblock_data.Add(stage_name[i], base);
             // At the end of the step, updating "sc1" updates the base
@@ -221,11 +225,11 @@ TaskCollection ImexDriver::MakeTaskCollection(BlockList_t &blocks, int stage)
 
         // Update any variables for which we should take an explicit step.
         // These calls are the equivalent of what's in HARMDriver
-        // auto t_average = tl.AddTask(t_sources, Update::WeightedSumData<MetadataFlag, MeshData<Real>>,
+        // auto t_average = tl.AddTask(t_sources, Update::WeighatedSumData<MetadataFlag, MeshData<Real>>,
         //                             std::vector<MetadataFlag>({isExplicit, Metadata::Independent}),
 // mc_solver=beta*mc0+(1-beta)*mbase;  mc0.get(), mbase.get(), beta, (1.0 - beta), mc_solver.get());
 
-        // auto t_explicit_U = tl.AddTask(t_average, Update::WeightedSumData<MetadataFlag, MeshData<Real>>,
+        // auto t_explicit_U = tl.AddTask(t_average, Update::WeighatedSumData<MetadataFlag, MeshData<Real>>,
         //                             std::vector<MetadataFlag>({isExplicit, Metadata::Independent}),
 // mc_solver += beta*dt*mdudt;         mc_solver.get(), mdudt.get(), 1.0, beta * dt, mc_solver.get());
         // Version with half/whole step to match implicit solver
@@ -262,13 +266,13 @@ TaskCollection ImexDriver::MakeTaskCollection(BlockList_t &blocks, int stage)
         auto t_guess_ready = t_explicit | t_copy_guess;
         auto t_implicit = tl.AddTask(t_guess_ready, Implicit::Step, mbase.get(), mc0.get(), mdudt.get(), mc_solver.get(), dt_this);
 
-        // Copy the solver state into the final state mc1
+        // Copy the solver state into the final state mc1. That must be why there are no flags in it
         auto t_copy_result = tl.AddTask(t_implicit, Update::WeightedSumData<MetadataFlag, MeshData<Real>>, std::vector<MetadataFlag>({}),
                                         mc_solver.get(), mc_solver.get(), 1.0, 0.0, mc1.get());
                                         /* mc_1 = mc_solver; */ 
         // If evolving GRMHD explicitly, U_to_P needs a guess in order to converge, so we copy in mc0
         auto t_copy_prims = t_none;
-        if (!pkgs.at("GRMHD")->Param<bool>("implicit")) {
+        if (!pkgs.at("GRMHD")->Param<bool>("implicit")) { // Mine is implicit==false as thats the default value
             MetadataFlag isPrimitive = pkgs.at("GRMHD")->Param<MetadataFlag>("PrimitiveFlag");
             MetadataFlag isHD = pkgs.at("GRMHD")->Param<MetadataFlag>("HDFlag");
             auto t_copy_prims = tl.AddTask(t_none, Update::WeightedSumData<MetadataFlag, MeshData<Real>>,
