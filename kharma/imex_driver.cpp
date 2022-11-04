@@ -89,9 +89,8 @@ TaskCollection ImexDriver::MakeTaskCollection(BlockList_t &blocks, int stage)
         // first make other useful containers
         auto &base = pmb->meshblock_data.Get();
         if (stage == 1) {
+            auto t_heating_test = tl.AddTask(t_none, Electrons::ApplyHeating, base.get(), stage);
             pmb->meshblock_data.Add("dUdt", base);
-            auto t_heating_test = tl.AddTask(t_none, Electrons::ApplyHeatingSubstep, base.get());
-            auto t_u_to_p = tl.AddTask(t_heating_test, Flux::PtoUTask, base.get());
             for (int i = 1; i < integrator->nstages; i++)
                 pmb->meshblock_data.Add(stage_name[i], base);
             // At the end of the step, updating "sc1" updates the base
@@ -335,10 +334,13 @@ TaskCollection ImexDriver::MakeTaskCollection(BlockList_t &blocks, int stage)
         if (use_electrons) {
             t_heat_electrons = tl.AddTask(t_fix_derived, Electrons::ApplyElectronHeating, sc0.get(), sc1.get(), stage != 1);
         }
-
+        auto t_heating_test = t_heat_electrons;
+        if (stage == 2) {
+            t_heating_test = tl.AddTask(t_heat_electrons, Electrons::ApplyHeating, sc1.get(), stage);
+        }
 
         // Make sure conserved vars are synchronized at step end
-        auto t_ptou = tl.AddTask(t_heat_electrons, Flux::PtoUTask, sc1.get());
+        auto t_ptou = tl.AddTask(t_heating_test, Flux::PtoUTask, sc1.get());
 
         auto t_step_done = t_ptou;
 
