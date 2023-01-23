@@ -564,29 +564,24 @@ TaskStatus ApplyElectronHeating(MeshBlockData<Real> *rc_old, MeshBlockData<Real>
 }
 
 // Only if prob is rest_conserve or hubble
-TaskStatus ApplyHeating(MeshBlockData<Real> * mbase) {
+TaskStatus ApplyHubbleHeating(MeshBlockData<Real> * mbase) {
     auto pmb0 = mbase->GetBlockPointer();
     const string prob = pmb0->packages.Get("GRMHD")->Param<string>("problem");
     if (prob != "rest_conserve" && prob != "hubble") return TaskStatus::complete;
 
-    Flag(mbase, "Applying heating");
+    Flag(mbase, "Applying Hubble heating");
 
     PackIndexMap prims_map;
     auto P_mbase = GRMHD::PackHDPrims(mbase, prims_map);
     const VarMap m_p(prims_map, false);
 
-    Real Q = 0;
     const Real dt = pmb0->packages.Get("Globals")->Param<Real>("dt_last");  // Close enough?
     const Real t = pmb0->packages.Get("Globals")->Param<Real>("time") + 0.5*dt;
-    if (prob == "rest_conserve") {
-        const Real q = pmb0->packages.Get("GRMHD")->Param<Real>("q");
-        Q = q*pow(t, 2);
-    } else {
-        const Real v0 = pmb0->packages.Get("GRMHD")->Param<Real>("v0");
-        const Real ug0 = pmb0->packages.Get("GRMHD")->Param<Real>("ug0");
-        const Real gam = pmb0->packages.Get("GRMHD")->Param<Real>("gamma");
-        Q = (ug0 * v0 * (gam - 2) / pow(1 + v0 * t, 3));
-    }
+    const Real v0 = pmb0->packages.Get("GRMHD")->Param<Real>("v0");
+    const Real ug0 = pmb0->packages.Get("GRMHD")->Param<Real>("ug0");
+    const Real gam = pmb0->packages.Get("GRMHD")->Param<Real>("gamma");
+    const Real Q = (ug0 * v0 * (gam - 2) / pow(1 + v0 * t, 3));
+
     IndexDomain domain = IndexDomain::interior;
     auto ib = mbase->GetBoundsI(domain);
     auto jb = mbase->GetBoundsJ(domain);
@@ -599,7 +594,7 @@ TaskStatus ApplyHeating(MeshBlockData<Real> * mbase) {
         }
     );
     Flux::PtoU(mbase);
-    Flag(mbase, "Applied heating");
+    Flag(mbase, "Applied Hubble heating");
     return TaskStatus::complete;
 }
 

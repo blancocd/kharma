@@ -89,7 +89,7 @@ TaskCollection ImexDriver::MakeTaskCollection(BlockList_t &blocks, int stage)
         // first make other useful containers
         auto &base = pmb->meshblock_data.Get();
         if (stage == 1) {
-            auto t_heating_test = tl.AddTask(t_none, Electrons::ApplyHeating, base.get());
+            auto t_heating_test = tl.AddTask(t_none, Electrons::ApplyHubbleHeating, base.get());
             pmb->meshblock_data.Add("dUdt", base);
             for (int i = 1; i < integrator->nstages; i++)
                 pmb->meshblock_data.Add(stage_name[i], base);
@@ -191,7 +191,7 @@ TaskCollection ImexDriver::MakeTaskCollection(BlockList_t &blocks, int stage)
         // ADD EXPLICIT SOURCES TO CONSERVED VARIABLES
         // Source term for GRMHD, \Gamma * T
         // TODO take this out in Minkowski space
-        auto t_grmhd_source = tl.AddTask(t_flux_div, GRMHD::AddSource, mc0.get(), mdudt.get(), stage == 1);
+        auto t_grmhd_source = tl.AddTask(t_flux_div, GRMHD::AddSource, mc0.get(), mdudt.get());
         // Source term for constraint-damping.  Applied only to B
         auto t_b_cd_source = t_grmhd_source;
         if (use_b_cd) {
@@ -331,7 +331,7 @@ TaskCollection ImexDriver::MakeTaskCollection(BlockList_t &blocks, int stage)
 
         // Electron heating goes where it does in HARMDriver, for the same reasons
         auto t_heating_test = t_fix_derived;
-        if (stage == 2) t_heating_test = tl.AddTask(t_fix_derived, Electrons::ApplyHeating, sc1.get());
+        if (stage == 2) t_heating_test = tl.AddTask(t_fix_derived, Electrons::ApplyHubbleHeating, sc1.get());
         auto t_heat_electrons = t_heating_test;
         if (use_electrons) {
             t_heat_electrons = tl.AddTask(t_heating_test, Electrons::ApplyElectronHeating, sc0.get(), sc1.get(), stage != 1);

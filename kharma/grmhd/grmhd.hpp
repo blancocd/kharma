@@ -88,7 +88,7 @@ void PostUtoP(MeshBlockData<Real> *rc);
  * 
  * Note Flux::ApplyFluxes = parthenon::FluxDivergence + GRMHD::AddSource
  */
-TaskStatus AddSource(MeshData<Real> *md, MeshData<Real> *mdudt, bool first_half_step);
+TaskStatus AddSource(MeshData<Real> *md, MeshData<Real> *mdudt);
 
 /**
  * Returns the minimum CFL timestep among all zones in the block,

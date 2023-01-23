@@ -38,7 +38,7 @@
 #include "pack.hpp"
 #include "types.hpp"
 
-TaskStatus GRMHD::AddSource(MeshData<Real> *md, MeshData<Real> *mdudt, bool first_half_step)
+TaskStatus GRMHD::AddSource(MeshData<Real> *md, MeshData<Real> *mdudt)
 {
     Flag(mdudt, "Adding GRMHD source");
     // Pointers
