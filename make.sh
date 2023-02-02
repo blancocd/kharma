@@ -43,7 +43,7 @@
 
 # Less common options:
 # PREFIX_PATH=
-# EXTRA_FLAGS=
+export CXXFLAGS="-lfftw3 -lm"
 
 HOST=$(hostname -f)
 if [ -z $HOST ]; then

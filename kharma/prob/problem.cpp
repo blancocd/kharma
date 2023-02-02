@@ -45,6 +45,8 @@
 
 // Problem initialization headers
 #include "bondi.hpp"
+#include "driven_turbulence.hpp"
+#include "emhdmodes.hpp"
 #include "explosion.hpp"
 #include "fm_torus.hpp"
 #include "resize_restart.hpp"
@@ -53,6 +55,7 @@
 #include "mhdmodes.hpp"
 #include "orszag_tang.hpp"
 #include "shock_tube.hpp"
+#include "hubble.hpp"
 #include "noh.hpp"
 
 #include "emhd/anisotropic_conduction.hpp"
@@ -103,6 +106,10 @@ void KHARMA::ProblemGenerator(MeshBlock *pmb, ParameterInput *pin)
     // Electrons
     } else if (prob == "noh") {
         status = InitializeNoh(rc.get(), pin);
+    } else if (prob == "hubble") {
+        status = InitializeHubble(rc.get(), pin);
+    } else if (prob == "driven_turbulence") {
+        status = InitializeDrivenTurbulence(rc.get(), pin);
     // Extended GRMHD
     } else if (prob == "emhdmodes") {
         status = InitializeEMHDModes(rc.get(), pin);
