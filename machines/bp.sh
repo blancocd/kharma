@@ -1,6 +1,23 @@
 
 # BP's machines
 
+if [[ $HOST == "cheshire"* ]]; then
+  HOST_ARCH="HSW"
+  DEVICE_ARCH="PASCAL61"
+  export OMP_NUM_THREADS=24
+
+  if [[ "$ARGS" == *"cuda"* ]]; then
+    # NVHPC. Compiler is chosen automatically now
+    module load nvhpc
+  else
+    # Intel oneAPI
+    module load compiler mpi/2021
+  fi
+
+  NPROC=24
+  MPI_EXE=mpirun
+fi
+
 if [[ $HOST == "toolbox"* || $HOST == "nvhpc"* ]]; then
   METAL_HOSTNAME=$(cat ~/.config/hostname)
 fi
@@ -8,7 +25,6 @@ fi
 if [[ $METAL_HOSTNAME == "fermium" ]]; then
   HOST_ARCH="AMDAVX"
   DEVICE_ARCH="TURING75"
-  export KOKKOS_NUM_DEVICES=1
   # Nvidia MPI hangs unless I do this
   MPI_EXE=mpirun
 
@@ -88,7 +104,6 @@ if [[ $HOST == "cinnabar"* ]]; then
     # Use NVHPC libraries (GPU-aware OpenMPI!)
     DEVICE_ARCH="KEPLER35"
     MPI_NUM_PROCS=2
-    KOKKOS_NUM_DEVICES=2
     MPI_EXTRA_ARGS="--map-by ppr:1:numa:pe=14"
 
     # Quash warning about my old gpus
