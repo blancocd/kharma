@@ -43,7 +43,7 @@
  * Follows initial conditions from Lecoanet et al. 2015,
  * MNRAS 455, 4274.
  */
-void InitializeKelvinHelmholtz(MeshBlockData<Real> *rc, ParameterInput *pin)
+TaskStatus InitializeKelvinHelmholtz(MeshBlockData<Real> *rc, ParameterInput *pin)
 {
     auto pmb = rc->GetBlockPointer();
     GridScalar rho = rc->Get("prims.rho").data;
@@ -66,14 +66,14 @@ void InitializeKelvinHelmholtz(MeshBlockData<Real> *rc, ParameterInput *pin)
     const auto& G = pmb->coords;
     const Real gam = pmb->packages.Get("GRMHD")->Param<Real>("gamma");
 
-    IndexDomain domain = IndexDomain::entire;
+    IndexDomain domain = IndexDomain::interior;
     IndexRange ib = pmb->cellbounds.GetBoundsI(domain);
     IndexRange jb = pmb->cellbounds.GetBoundsJ(domain);
     IndexRange kb = pmb->cellbounds.GetBoundsK(domain);
     pmb->par_for("kh_init", kb.s, kb.e, jb.s, jb.e, ib.s, ib.e,
         KOKKOS_LAMBDA_3D {
             GReal X[GR_DIM];
-            G.coord_embed(i, j, k, Loci::center, X);
+            G.coord_embed(k, j, i, Loci::center, X);
 
             // Lecoanet's x <-> x1; z <-> x2
             GReal x = X[1];
@@ -96,4 +96,6 @@ void InitializeKelvinHelmholtz(MeshBlockData<Real> *rc, ParameterInput *pin)
             VLOOP uvec(v, k, j, i) *= tscale;
         }
     );
+
+    return TaskStatus::complete;
 }

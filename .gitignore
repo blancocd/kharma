@@ -4,6 +4,7 @@ out-*.txt
 convergence.txt
 *.h5
 *.png
+*.mp4
 core.*
 frames_*/
 
@@ -12,8 +13,9 @@ frames_*/
 *.rhdf
 *.xdmf
 *.hst
-# Archival parsed parameters file
+# Archival files
 kharma_parsed_*.par
+log_*.txt
 
 # Editor documents
 .project
@@ -24,9 +26,14 @@ kharma_parsed_*.par
 # C++ excludes
 # Build directory
 build/
+
+# External directories
+external/hdf5*
+
 # Prerequisites
 *.d
 make_args
+
 
 # Compiled Object files
 *.slo

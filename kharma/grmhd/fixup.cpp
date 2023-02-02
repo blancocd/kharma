@@ -32,14 +32,15 @@
  *  OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include "fixup.hpp"
+#include "grmhd.hpp"
 
 #include "floors.hpp"
+#include "flux_functions.hpp"
 #include "pack.hpp"
 
-// I'm undecided on reintroducing these more widely but they clearly make sense here
+// Version of PLOOP guaranteeing specifically the 5 GRMHD fixup-amenable primitive vars
 #define NPRIM 5
-#define PLOOP for(int p=0; p < NPRIM; ++p)
+#define PRIMLOOP for(int p=0; p < NPRIM; ++p)
 
 TaskStatus GRMHD::FixUtoP(MeshBlockData<Real> *rc)
 {
@@ -47,7 +48,7 @@ TaskStatus GRMHD::FixUtoP(MeshBlockData<Real> *rc)
     // But we can only fix primitives with their neighbors.
     // This may actually mean we require the 4 ghost zones Parthenon "wants" us to have,
     // if we need to use only fixed zones.
-    FLAG("Fixing U to P inversions");
+    Flag(rc, "Fixing U to P inversions");
     auto pmb = rc->GetBlockPointer();
     const auto& G = pmb->coords;
 
@@ -61,11 +62,17 @@ TaskStatus GRMHD::FixUtoP(MeshBlockData<Real> *rc)
     const auto& pars = pmb->packages.Get("GRMHD")->AllParams();
     const Real gam = pars.Get<Real>("gamma");
     const int verbose = pars.Get<int>("verbose");
-    const FloorPrescription floors = FloorPrescription(pars);
+    const Floors::Prescription floors(pmb->packages.Get("Floors")->AllParams());
 
+    // Just as UtoP needs to be applied over all zones, it needs to be fixed over all zones
+    // TODO probably shouldn't fix or use physical ghost zones...
     const IndexRange ib = rc->GetBoundsI(IndexDomain::entire);
     const IndexRange jb = rc->GetBoundsJ(IndexDomain::entire);
     const IndexRange kb = rc->GetBoundsK(IndexDomain::entire);
+
+    const IndexRange ib_b = rc->GetBoundsI(IndexDomain::interior);
+    const IndexRange jb_b = rc->GetBoundsJ(IndexDomain::interior);
+    const IndexRange kb_b = rc->GetBoundsK(IndexDomain::interior);
 
     // TODO attempt to recover from entropy here if it's present
 
@@ -81,20 +88,20 @@ TaskStatus GRMHD::FixUtoP(MeshBlockData<Real> *rc)
                     for (int m = -1; m <= 1; m++) {
                         for (int l = -1; l <= 1; l++) {
                             int ii = i + l, jj = j + m, kk = k + n;
-                            // If in bounds...
-                            if (ii >= ib.s && ii <= ib.e && jj >= jb.s && jj <= jb.e && kk >= kb.s && kk <= kb.e) {
+                            // If we haven't overstepped array bounds...
+                            if (inside(kk, jj, ii, kb, jb, ib)) {
                                 // Weight by distance
-                                double w = 1./(abs(l) + abs(m) + abs(n) + 1);
+                                double w = 1./(m::abs(l) + m::abs(m) + m::abs(n) + 1);
 
                                 // Count only the good cells, if we can
                                 if (((int) pflag(kk, jj, ii)) == InversionStatus::success) {
                                     // Weight by distance.  Note interpolated "fixed" cells stay flagged
                                     wsum += w;
-                                    PLOOP sum[p] += w * P(p, kk, jj, ii);
+                                    PRIMLOOP sum[p] += w * P(p, kk, jj, ii);
                                 }
                                 // Just in case, keep a sum of even the bad ones
                                 wsum_x += w;
-                                PLOOP sum_x[p] += w * P(p, kk, jj, ii);
+                                PRIMLOOP sum_x[p] += w * P(p, kk, jj, ii);
                             }
                         }
                     }
@@ -103,11 +110,12 @@ TaskStatus GRMHD::FixUtoP(MeshBlockData<Real> *rc)
                 if(wsum < 1.e-10) {
                     // TODO probably should crash here.
 #ifndef KOKKOS_ENABLE_SYCL
-                    if (verbose >= 1) printf("No neighbors were available at %d %d %d!\n", i, j, k);
+                    if (verbose >= 1 && inside(k, j, i, kb_b, jb_b, ib_b)) // If an interior zone...
+                        printf("No neighbors were available at %d %d %d!\n", i, j, k);
 #endif
-                    PLOOP P(p, k, j, i) = sum_x[p]/wsum_x;
+                    //PRIMLOOP P(p, k, j, i) = sum_x[p]/wsum_x;
                 } else {
-                    PLOOP P(p, k, j, i) = sum[p]/wsum;
+                    PRIMLOOP P(p, k, j, i) = sum[p]/wsum;
                 }
             }
         }
@@ -125,18 +133,22 @@ TaskStatus GRMHD::FixUtoP(MeshBlockData<Real> *rc)
     pmb->par_for("fix_U_to_P_floors", kb.s, kb.e, jb.s, jb.e, ib.s, ib.e,
         KOKKOS_LAMBDA_3D {
             if (((int) pflag(k, j, i)) > InversionStatus::success) {
+                apply_geo_floors(G, P, m_p, gam, k, j, i, floors);
+
                 // Make sure to keep lockstep
+                // This will only be run for GRMHD, so we can call its p_to_u
                 GRMHD::p_to_u(G, P, m_p, gam, k, j, i, U, m_u);
 
                 // And make sure the fixed values still abide by floors (floors keep lockstep)
-                int fflag_local = 0;
-                fflag_local |= apply_floors(G, P, m_p, gam, k, j, i, floors, U, m_u);
-                fflag_local |= apply_ceilings(G, P, m_p, gam, k, j, i, floors, U, m_u);
-                fflag(k, j, i) = fflag_local;
+                // TODO Fluid Frame instead of just geo?
+                // int fflag_local = 0;
+                // fflag_local |= Floors::apply_floors(G, P, m_p, gam, k, j, i, floors, U, m_u);
+                // fflag_local |= Floors::apply_ceilings(G, P, m_p, gam, k, j, i, floors, U, m_u);
+                // fflag(k, j, i) = fflag_local;
             }
         }
     );
 
-    FLAG("Fixed U to P inversions");
+    Flag(rc, "Fixed U to P inversions");
     return TaskStatus::complete;
 }

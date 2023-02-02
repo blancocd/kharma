@@ -42,68 +42,82 @@ using namespace parthenon;
 /**
  * This physics package implements General-Relativistic Magnetohydrodynamics
  *
- * Unlike MHD, GRMHD has two independent sets of variables: the conserved variables, and a set of
- * "primitive" variables more amenable to reconstruction.  To evolve the fluid, the conserved
- * variables must be:
- * 1. Transformed to the primitives
- * 2. Reconstruct the right- and left-going components at zone faces
- * 3. Transform back to conserved quantities and calculate the fluxes at faces
- * 4. Update conserved variables using the divergence of conserved fluxes
+ * Anything specific to GRMHD (but not relating to the particular *order* of operations)
+ * is implemented in this namespace, in the files grmhd.cpp, source.cpp, and fixup.cpp.
  * 
- * (for higher-order schemes, this is more or less just repeated and added)
- *
- * iharm3d puts step 1 at the bottom, and syncs/fixes primitive variables between each step.
- * KHARMA runs through the steps as listed, applying floors after step 1 as iharm3d does, but
- * syncing the conserved variables 
+ * 
  */
 namespace GRMHD {
-    // For declaring meshes, as well as the full intermediates we need (right & left fluxes etc)
-    std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin);
+// For declaring meshes, as well as the full intermediates we need (right & left fluxes etc)
+std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin, Packages_t packages);
 
-    /**
-     * Get the primitive variables
-     * This just computes P, and only for the fluid varaibles.
-     * Other packages must convert P->U by registering their version as "FillDerived"
-     *
-     * input: U, whatever form
-     * output: U and P match down to inversion errors
-     */
-    void UtoP(MeshBlockData<Real> *rc);
+/**
+ * Get the primitive variables
+ * This just computes P, and only for the fluid varaibles.
+ * Other packages must convert P->U by registering their version as "FillDerived"
+ *
+ * Defaults to entire domain, as the KHARMA algorithm relies on applying UtoP over ghost zones.
+ * 
+ * input: U, whatever form
+ * output: U and P match down to inversion errors
+ */
+// void UtoP(MeshData<Real> *md, IndexDomain domain=IndexDomain::entire, bool coarse=false);
+// inline void FillDerivedMesh(MeshData<Real> *md) { UtoP(md); }
+void UtoP(MeshBlockData<Real> *rc, IndexDomain domain=IndexDomain::entire, bool coarse=false);
+inline void FillDerivedBlock(MeshBlockData<Real> *rc) { UtoP(rc); }
+inline TaskStatus FillDerivedBlockTask(MeshBlockData<Real> *rc) { UtoP(rc); return TaskStatus::complete; }
 
-    /**
-     * Fix the primitive variables
-     * Applies floors to the calculated primitives, and fixes up any failed inversions
-     *
-     * input: U & P, "matching"
-     * output: U and P match with inversion errors corrected, and obey floors
-     */
-    void PostUtoP(MeshBlockData<Real> *rc);
+/**
+ * Smooth over inversion failures by averaging values from each neighboring zone
+ * a.k.a. Diffusion?  What diffusion?  There is no diffusion here.
+ * 
+ * LOCKSTEP: this function expects and should preserve P<->U
+ */
+TaskStatus FixUtoP(MeshBlockData<Real> *rc);
+/**
+ * Fix the primitive variables
+ * Applies floors to the calculated primitives, and fixes up any failed inversions
+ *
+ * input: U & P, "matching"
+ * output: U and P match with inversion errors corrected, and obey floors
+ */
+void PostUtoP(MeshBlockData<Real> *rc);
 
-    /**
-     * Returns the minimum CFL timestep among all zones in the block,
-     * multiplied by a proportion "cfl" for safety.
-     *
-     * This is just for a particular MeshBlock/package, so don't rely on it
-     * Parthenon will take the minimum and put it in pmy_mesh->dt
-     */
-    Real EstimateTimestep(MeshBlockData<Real> *rc);
+/**
+ * Function to apply the GRMHD source term over the entire grid.
+ * 
+ * Note Flux::ApplyFluxes = parthenon::FluxDivergence + GRMHD::AddSource
+ */
+TaskStatus AddSource(MeshData<Real> *md, MeshData<Real> *mdudt);
 
-    /**
-     * Return a tag per-block indicating whether to refine it
-     * 
-     * Criteria are very WIP
-     */
-    AmrTag CheckRefinement(MeshBlockData<Real> *rc);
+/**
+ * Returns the minimum CFL timestep among all zones in the block,
+ * multiplied by a proportion "cfl" for safety.
+ *
+ * This is just for a particular MeshBlock/package, so don't rely on it
+ * Parthenon will take the minimum and put it in pmy_mesh->dt
+ */
+Real EstimateTimestep(MeshBlockData<Real> *rc);
 
-    /**
-     * Fill fields which are calculated only for output to file
-     * Currently just the current jcon
-     */
-    void FillOutput(MeshBlock *pmb, ParameterInput *pin);
+// Internal version for the light phase speed crossing time of smallest zone
+Real EstimateRadiativeTimestep(MeshBlockData<Real> *rc);
 
-    /**
-     * Diagnostics performed after each step.
-     * Currently finds any negative flags or 0/NaN values in ctop
-     */
-    TaskStatus PostStepDiagnostics(const SimTime& tm, MeshData<Real> *rc);
+/**
+ * Return a tag per-block indicating whether to refine it
+ * 
+ * Criteria are very WIP
+ */
+AmrTag CheckRefinement(MeshBlockData<Real> *rc);
+
+/**
+ * Fill fields which are calculated only for output to file
+ * Currently just the current jcon
+ */
+void FillOutput(MeshBlock *pmb, ParameterInput *pin);
+
+/**
+ * Diagnostics performed after each step.
+ * Currently finds any negative flags or 0/NaN values in ctop
+ */
+TaskStatus PostStepDiagnostics(const SimTime& tm, MeshData<Real> *rc);
 }

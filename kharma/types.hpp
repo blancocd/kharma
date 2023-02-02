@@ -34,10 +34,26 @@
 #pragma once
 
 #include "decs.hpp"
+#include "mpi.hpp"
 
 #include <parthenon/parthenon.hpp>
 
-// KHARMA TYPES
+using namespace parthenon;
+
+using parthenon::MeshBlockData;
+
+/**
+ * Types, macros, and convenience functions
+ * 
+ * Anything potentially useful throughout KHARMA, but specific to it
+ * (general copy/pastes from StackOverflow go in kharma_utils.hpp)
+ */
+
+// This provides a way of addressing vectors that matches
+// directions, to make derivatives etc more readable
+#define V1 0
+#define V2 1
+#define V3 2
 
 // Denote reconstruction algorithms
 // See reconstruction.hpp for implementations
@@ -47,34 +63,18 @@ enum ReconstructionType{donor_cell=0, linear_mc, linear_vl, ppm, mp5, weno5, wen
 // Only thrown from function in U_to_P.hpp, see that file for meanings
 enum InversionStatus{success=0, neg_input, max_iter, bad_ut, bad_gamma, neg_rho, neg_u, neg_rhou};
 
-// Floor codes are non-exclusive, so it makes little sense to use an enum
-// Instead, we use bitflags, starting high enough that we can stick the enum in the bottom 5 bits
-// See floors.hpp for explanations of the flags
-#define HIT_FLOOR_GEOM_RHO 32
-#define HIT_FLOOR_GEOM_U 64
-#define HIT_FLOOR_B_RHO 128
-#define HIT_FLOOR_B_U 256
-#define HIT_FLOOR_TEMP 512
-#define HIT_FLOOR_GAMMA 1024
-#define HIT_FLOOR_KTOT 2048
-// Separate flags for when the floors are applied after reconstruction.
-// Not yet used, as this will likely have some speed penalty paid even if
-// the flags aren't written
-#define HIT_FLOOR_GEOM_RHO_FLUX 4096
-#define HIT_FLOOR_GEOM_U_FLUX 8192
-
 // Struct for derived 4-vectors at a point, usually calculated and needed together
 typedef struct {
-    parthenon::Real ucon[GR_DIM];
-    parthenon::Real ucov[GR_DIM];
-    parthenon::Real bcon[GR_DIM];
-    parthenon::Real bcov[GR_DIM];
+    Real ucon[GR_DIM];
+    Real ucov[GR_DIM];
+    Real bcon[GR_DIM];
+    Real bcov[GR_DIM];
 } FourVectors;
 
 /**
  * Map of the locations of particular variables in a VariablePack
  * Used for operations conducted over all vars which must still
- * distinguish between them, e.g. fluxes.hpp
+ * distinguish between them, e.g. flux.hpp
  *
  * We use this instead of the PackIndexMap, because comparing strings
  * on the device every time we need the index of a variable is slow.
@@ -87,11 +87,16 @@ typedef struct {
  */
 class VarMap {
     public:
-        // 127 values ought to be enough for anybody
-        int8_t RHO, UU, U1, U2, U3, B1, B2, B3, PSI;
+        // Use int8. 127 values ought to be enough for anybody, right?
+        // Basic primitive variables
+        int8_t RHO, UU, U1, U2, U3, B1, B2, B3;
+        // Tracker variables
         int8_t RHO_ADDED, UU_ADDED, PASSIVE;
+        // Electron entropy/energy tracking
         int8_t KTOT, K_CONSTANT, K_HOWES, K_KAWAZURA, K_WERNER, K_ROWAN, K_SHARMA;
-        // Total struct size 20 bytes, < 1 vector of 4 doubles
+        // Implicit-solver variables: constraint damping, EGRMHD
+        int8_t PSI, Q, DP;
+        // Total struct size ~20 bytes, < 1 vector of 4 doubles
 
         VarMap(parthenon::PackIndexMap& name_map, bool is_cons)
         {
@@ -114,6 +119,9 @@ class VarMap {
                 K_WERNER = name_map["cons.Kel_Werner"].first;
                 K_ROWAN = name_map["cons.Kel_Rowan"].first;
                 K_SHARMA = name_map["cons.Kel_Sharma"].first;
+                // Extended MHD
+                Q = name_map["cons.q"].first;
+                DP = name_map["cons.dP"].first;
             } else {
                 // HD
                 RHO = name_map["prims.rho"].first;
@@ -133,6 +141,9 @@ class VarMap {
                 K_WERNER = name_map["prims.Kel_Werner"].first;
                 K_ROWAN = name_map["prims.Kel_Rowan"].first;
                 K_SHARMA = name_map["prims.Kel_Sharma"].first;
+                // Extended MHD
+                Q = name_map["prims.q"].first;
+                DP = name_map["prims.dP"].first;
             }
             U2 = U1 + 1;
             U3 = U1 + 2;
@@ -142,37 +153,113 @@ class VarMap {
 };
 
 /**
- * Struct to hold floor values without cumbersome dictionary/string logistics.
- * Hopefully faster than dragging the full Params object device side,
- * similar reasoning to VarMap above.
+ * Functions for checking boundaries in 3D
  */
-class FloorPrescription {
-    public:
-        // Purely geometric limits
-        double rho_min_geom, u_min_geom, r_char;
-        // Dynamic limits on magnetization/temperature
-        double bsq_over_rho_max, bsq_over_u_max, u_over_rho_max;
-        // Limit entropy
-        double ktot_max;
-        // Limit fluid Lorentz factor
-        double gamma_max;
-        // Floor options
-        bool temp_adjust_u, fluid_frame, adjust_k;
+KOKKOS_INLINE_FUNCTION bool inside(const int& k, const int& j, const int& i,
+                                   const IndexRange& kb, const IndexRange& jb, const IndexRange& ib)
+{
+    return (i >= ib.s) && (i <= ib.e) && (j >= jb.s) && (j <= jb.e) && (k >= kb.s) && (k <= kb.e);
+}
+KOKKOS_INLINE_FUNCTION bool outside(const int& k, const int& j, const int& i,
+                                    const IndexRange& kb, const IndexRange& jb, const IndexRange& ib)
+{
+    return (i < ib.s) || (i > ib.e) || (j < jb.s) || (j > jb.e) || (k < kb.s) || (k > kb.e);
+}
 
-        FloorPrescription(const parthenon::Params& params)
-        {
-            rho_min_geom = params.Get<Real>("rho_min_geom");
-            u_min_geom = params.Get<Real>("u_min_geom");
-            r_char = params.Get<Real>("floor_r_char");
+/**
+ * Function for checking boundary flags: is this a domain or internal bound?
+ */
+inline bool IsDomainBound(MeshBlock *pmb, BoundaryFace face)
+{
+    return (pmb->boundary_flag[face] != BoundaryFlag::block &&
+            pmb->boundary_flag[face] != BoundaryFlag::periodic);
+}
 
-            bsq_over_rho_max = params.Get<Real>("bsq_over_rho_max");
-            bsq_over_u_max = params.Get<Real>("bsq_over_u_max");
-            u_over_rho_max = params.Get<Real>("u_over_rho_max");
-            ktot_max = params.Get<Real>("ktot_max");
-            gamma_max = params.Get<Real>("gamma_max");
-
-            temp_adjust_u = params.Get<bool>("temp_adjust_u");
-            fluid_frame = params.Get<bool>("fluid_frame");
-            adjust_k = params.Get<bool>("adjust_k");
+/**
+ * Functions for "tracing" execution by printing strings (and optionally state of zones)
+ * at each important function entry/exit
+ */
+#if TRACE
+#define PRINTCORNERS 0
+#define PRINTZONE 0
+inline void PrintCorner(MeshBlockData<Real> *rc)
+{
+    auto rhop = rc->Get("prims.rho").data.GetHostMirrorAndCopy();
+    auto up = rc->Get("prims.u").data.GetHostMirrorAndCopy();
+    auto uvecp = rc->Get("prims.uvec").data.GetHostMirrorAndCopy();
+    auto Bp = rc->Get("prims.B").data.GetHostMirrorAndCopy();
+    auto rhoc = rc->Get("cons.rho").data.GetHostMirrorAndCopy();
+    auto uc = rc->Get("cons.u").data.GetHostMirrorAndCopy();
+    auto uvecc = rc->Get("cons.uvec").data.GetHostMirrorAndCopy();
+    auto Bu = rc->Get("cons.B").data.GetHostMirrorAndCopy();
+    //auto p = rc->Get("p").data.GetHostMirrorAndCopy();
+    auto pflag = rc->Get("pflag").data.GetHostMirrorAndCopy();
+    //auto q = rc->Get("prims.q").data.GetHostMirrorAndCopy();
+    //auto dP = rc->Get("prims.dP").data.GetHostMirrorAndCopy();
+    const IndexRange ib = rc->GetBoundsI(IndexDomain::interior);
+    const IndexRange jb = rc->GetBoundsJ(IndexDomain::interior);
+    const IndexRange kb = rc->GetBoundsK(IndexDomain::interior);
+    std::cerr << "p:";
+    for (int j=0; j<8; j++) {
+        std::cerr << std::endl;
+        for (int i=0; i<8; i++) {
+            fprintf(stderr, "%.5g\t", pflag(kb.s, j, i));
         }
-};
+    }
+    // std::cerr << std::endl << "B1:";
+    // for (int j=0; j<8; j++) {
+    //     std::cerr << std::endl;
+    //     for (int i=0; i<8; i++) {
+    //         fprintf(stderr, "%.5g\t", Bu(V1, kb.s, j, i));
+    //     }
+    // }
+    std::cerr << std::endl << std::endl;
+}
+
+inline void PrintZone(MeshBlockData<Real> *rc)
+{
+    auto rhop = rc->Get("prims.rho").data.GetHostMirrorAndCopy();
+    auto up = rc->Get("prims.u").data.GetHostMirrorAndCopy();
+    auto uvecp = rc->Get("prims.uvec").data.GetHostMirrorAndCopy();
+    auto Bp = rc->Get("prims.B").data.GetHostMirrorAndCopy();
+    auto q = rc->Get("prims.q").data.GetHostMirrorAndCopy();
+    auto dP = rc->Get("prims.dP").data.GetHostMirrorAndCopy();
+    std::cerr << "RHO: " << rhop(0,0,100)
+         << " UU: "  << up(0,0,100)
+         << " U: "   << uvecp(0, 0,0,100) << " " << uvecp(1, 0,0,100)<< " " << uvecp(2, 0,0,100)
+         << " B: "   << Bp(0, 0,0,100) << " " << Bp(1, 0,0,100) << " " << Bp(2, 0,0,100)
+         << " q: "   << q(0,0,100) 
+         << " dP: "  << dP(0,0,100) << std::endl;
+}
+
+inline void Flag(std::string label)
+{
+    if(MPIRank0()) std::cerr << label << std::endl;
+}
+
+inline void Flag(MeshBlockData<Real> *rc, std::string label)
+{
+    if(MPIRank0()) {
+        std::cerr << label << std::endl;
+        if(PRINTCORNERS) PrintCorner(rc);
+        if(PRINTZONE) PrintZone(rc);
+    }
+}
+
+inline void Flag(MeshData<Real> *md, std::string label)
+{
+    if(MPIRank0()) {
+        std::cerr << label << std::endl;
+        if(PRINTCORNERS || PRINTZONE) {
+            auto rc = md->GetBlockData(0).get();
+            if(PRINTCORNERS) PrintCorner(rc);
+            if(PRINTZONE) PrintZone(rc);
+        }
+    }
+}
+
+#else
+inline void Flag(std::string label) {}
+inline void Flag(MeshBlockData<Real> *rc, std::string label) {}
+inline void Flag(MeshData<Real> *md, std::string label) {}
+#endif

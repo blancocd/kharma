@@ -2,8 +2,6 @@
 
 #include "decs.hpp"
 
-
-using namespace std;
 using namespace parthenon;
 
 /**
@@ -19,9 +17,9 @@ using namespace parthenon;
  * 
  * Stolen directly from iharm2d_v3
  */
-void InitializeOrszagTang(MeshBlockData<Real> *rc, ParameterInput *pin)
+TaskStatus InitializeOrszagTang(MeshBlockData<Real> *rc, ParameterInput *pin)
 {
-    FLAG("Initializing Orszag-Tang problem");
+    Flag(rc, "Initializing Orszag-Tang problem");
     auto pmb = rc->GetBlockPointer();
     GridScalar rho = rc->Get("prims.rho").data;
     GridScalar u = rc->Get("prims.u").data;
@@ -35,7 +33,7 @@ void InitializeOrszagTang(MeshBlockData<Real> *rc, ParameterInput *pin)
     // Default phase puts the current sheet in the middle of the domain
     const Real phase = pin->GetOrAddReal("orszag_tang", "phase", M_PI);
 
-    IndexDomain domain = IndexDomain::entire;
+    IndexDomain domain = IndexDomain::interior;
     IndexRange ib = pmb->cellbounds.GetBoundsI(domain);
     IndexRange jb = pmb->cellbounds.GetBoundsJ(domain);
     IndexRange kb = pmb->cellbounds.GetBoundsK(domain);
@@ -61,4 +59,6 @@ void InitializeOrszagTang(MeshBlockData<Real> *rc, ParameterInput *pin)
             VLOOP B_P(v, k, j, i) *= tscale;
         }
     );
+
+    return TaskStatus::complete;
 }

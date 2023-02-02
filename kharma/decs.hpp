@@ -31,12 +31,18 @@
  *  OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  *  OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
-
-// General definitions for KHARMA the code, applying 
-// Most compile-time options are in kharma/CMakeLists.txt
-// Some can be set through make.sh, some require editing that file
-
 #pragma once
+
+/**
+ * General definitions and imports we'll need in all parts of KHARMA.
+ * 
+ * Note that this file *cannot* import all of Parthenon: it is itself
+ * imported (indirectly) in several Parthenon headers, through
+ * gr_coordinates.hpp, which provides Parthenon's coordinates object
+ * 
+ * Thus it is mostly geometry-related and Kokkos-related definitions.
+ * Convenience functions and most KHARMA-specific datatypes are in types.h
+ */
 
 // KHARMA INCLUDES
 // Standard libs we absolutely need everywhere
@@ -47,6 +53,15 @@
 // Libraries I need directly
 #include "Kokkos_Core.hpp"
 
+#if 1
+// Resolve math functions to new Kokkos versions. Fast?
+namespace m = Kokkos::Experimental;
+#else
+// Resolve to standard library
+namespace m = std;
+#endif
+// TODO CUDA?
+
 // Bare Parthenon defs
 // Anything more leads to circular deps from gr_coordinates.hpp
 // TODO update, this was from very early Parthenon
@@ -55,20 +70,13 @@
 #include "bvals/bvals_interfaces.hpp"
 #include "mesh/domain.hpp"
 
-// My set of MPI wrappers, stubbed out when MPI is not present
-#include "mpi.hpp"
-
 // KHARMA DEFINITIONS
 
 // Parthenon stole our type names
 // Lots of work will need to be done for Real != double
-using Real = parthenon::Real;
+using parthenon::Real;
 using GReal = double;
 
-// Accuracy for numerical derivatives of the metric
-#define DELTA 1.e-8
-// Accuracy required for U to P
-#define UTOP_ERRTOL 1.e-8
 // A small number, compared to the grid or problem scale
 #define SMALL 1e-20
 
@@ -83,22 +91,61 @@ using GReal = double;
 #define VLOOP for(int v = 0; v < NVEC; ++v)
 #define VLOOP2 VLOOP for(int w = 0; w < NVEC; ++w)
 
+// And an odd but useful loop for ex-iharm3d code
+// This requires nvar to be defined in caller!
+// It is not a const/global anymore.  So, use this loop carefully
+#define PLOOP for(int ip=0; ip < nvar; ++ip)
+
 // Useful Enums to avoid lots of #defines
+// See following functions and coord() in gr_coordinates.hpp to
+// get an idea of these locations.  All faces/corner are *left* of center
 #define NLOC 5
 enum Loci{face1=0, face2, face3, center, corner};
+
+// Return the face location corresponding to the direction 'dir'
+KOKKOS_INLINE_FUNCTION Loci loc_of(const int& dir)
+{
+    switch (dir) {
+    case 0:
+        return Loci::center;
+    case parthenon::X1DIR:
+        return Loci::face1;
+    case parthenon::X2DIR:
+        return Loci::face2;
+    case parthenon::X3DIR:
+        return Loci::face3;
+    default:
+        return Loci::corner;
+    }
+}
+KOKKOS_INLINE_FUNCTION int dir_of(const Loci loc)
+{
+    switch (loc) {
+    case Loci::center:
+        return 0;
+    case Loci::face1:
+        return parthenon::X1DIR;
+    case Loci::face2:
+        return parthenon::X2DIR;
+    case Loci::face3:
+        return parthenon::X3DIR;
+    default:
+        return -1;
+    }
+}
 
 // Emulate old names for possible stronger typing later,
 // and for readability
 // TODO specify ParArrayXD instead of generic?
-using GridScalar = parthenon::ParArrayND<Real>;
-using GridVector = parthenon::ParArrayND<Real>;
-using GridVars = parthenon::ParArrayND<Real>;  // TODO ELIM
+using GridScalar = parthenon::ParArrayND<parthenon::Real>;
+using GridVector = parthenon::ParArrayND<parthenon::Real>;
+using GridVars = parthenon::ParArrayND<parthenon::Real>;  // TODO ELIM
 using GridInt = parthenon::ParArrayND<int>;
 
-using GeomScalar = parthenon::ParArrayND<Real>;
-using GeomVector = parthenon::ParArrayND<Real>;
-using GeomTensor2 = parthenon::ParArrayND<Real>;
-using GeomTensor3 = parthenon::ParArrayND<Real>;
+using GeomScalar = parthenon::ParArrayND<parthenon::Real>;
+using GeomVector = parthenon::ParArrayND<parthenon::Real>;
+using GeomTensor2 = parthenon::ParArrayND<parthenon::Real>;
+using GeomTensor3 = parthenon::ParArrayND<parthenon::Real>;
 
 // Specific lambdas for our array shapes
 #define KOKKOS_LAMBDA_1D KOKKOS_LAMBDA (const int& i)
@@ -118,19 +165,12 @@ using GeomTensor3 = parthenon::ParArrayND<Real>;
 #define KOKKOS_LAMBDA_MESH_VEC KOKKOS_LAMBDA (const int& b, const int &mu, const int &k, const int &j, const int &i)
 
 // TODO separate macros for return type if this becomes a thing?  Or don't macro at all
-#define KOKKOS_LAMBDA_1D_REDUCE KOKKOS_LAMBDA (const int &i, Real &local_result)
+#define KOKKOS_LAMBDA_1D_REDUCE KOKKOS_LAMBDA (const int &i, parthenon::Real &local_result)
 // This is used for timestep and divB, which are explicitly double
 #define KOKKOS_LAMBDA_2D_REDUCE KOKKOS_LAMBDA (const int &j, const int &i, double &local_result)
 #define KOKKOS_LAMBDA_3D_REDUCE KOKKOS_LAMBDA (const int &k, const int &j, const int &i, double &local_result)
 #define KOKKOS_LAMBDA_3D_REDUCE_INT KOKKOS_LAMBDA (const int &k, const int &j, const int &i, int &local_result)
-// Versions for full mesh (TODO use only these in KHARMA)
+// Versions for full mesh
 #define KOKKOS_LAMBDA_MESH_3D_REDUCE KOKKOS_LAMBDA (const int &b, const int &k, const int &j, const int &i, double &local_result)
 #define KOKKOS_LAMBDA_MESH_3D_REDUCE_INT KOKKOS_LAMBDA (const int &b, const int &k, const int &j, const int &i, int &local_result)
-// KHARMA FUNCTIONS
-
-// This is a macro and not a function for the sole reason that it still compiles if I forget the semicolon
-#if TRACE
-#define FLAG(x) if(MPIRank0()) std::cout << x << std::endl;
-#else
-#define FLAG(x)
-#endif
+#define KOKKOS_LAMBDA_MESH_4D_REDUCE KOKKOS_LAMBDA (const int &b, const int &v, const int &k, const int &j, const int &i, double &local_result)

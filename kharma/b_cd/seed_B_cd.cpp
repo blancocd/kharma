@@ -39,7 +39,9 @@
 #include "b_field_tools.hpp"
 
 #include "b_flux_ct.hpp"
-#include "mhd_functions.hpp"
+#include "grmhd_functions.hpp"
+
+using namespace parthenon;
 
 TaskStatus B_CD::SeedBField(MeshBlockData<Real> *rc, ParameterInput *pin)
 {
@@ -61,32 +63,17 @@ TaskStatus B_CD::SeedBField(MeshBlockData<Real> *rc, ParameterInput *pin)
 
     // Translate to an enum so we can avoid string comp inside,
     // as well as for good errors, many->one maps, etc.
-    BSeedType b_field_flag = BSeedType::sane;
-    if (b_field_type == "none") {
-        return TaskStatus::complete;
-    // } else if (b_field_type == "constant") {
-    //     b_field_flag = BSeedType::constant;
-    // } else if (b_field_type == "monopole") {
-    //     b_field_flag = BSeedType::monopole;
-    } else if (b_field_type == "sane") {
-        b_field_flag = BSeedType::sane;
-    } else if (b_field_type == "mad" || b_field_type == "ryan") {
-        b_field_flag = BSeedType::ryan;
-    } else if (b_field_type == "r3s3") {
-        b_field_flag = BSeedType::r3s3;
-    } else if (b_field_type == "gaussian") {
-        b_field_flag = BSeedType::gaussian;
-    } else {
-        throw std::invalid_argument("Magnetic field seed type not supported: " + b_field_type);
-    }
+    BSeedType b_field_flag = ParseBSeedType(b_field_type);
 
     // Require and load what we need if necessary
     Real rin, b10, b20, b30;
     switch (b_field_flag)
     {
     case BSeedType::constant:
+        b10 = pin->GetOrAddReal("b_field", "b10", 0.);
         b20 = pin->GetOrAddReal("b_field", "b20", 0.);
         b30 = pin->GetOrAddReal("b_field", "b30", 0.);
+        break;
     case BSeedType::monopole:
         b10 = pin->GetReal("b_field", "b10");
         break;
@@ -96,6 +83,8 @@ TaskStatus B_CD::SeedBField(MeshBlockData<Real> *rc, ParameterInput *pin)
     case BSeedType::r3s3:
     case BSeedType::gaussian:
         rin = pin->GetReal("torus", "rin");
+        break;
+    default:
         break;
     }
 
@@ -114,7 +103,6 @@ TaskStatus B_CD::SeedBField(MeshBlockData<Real> *rc, ParameterInput *pin)
         pmb->par_for("B_field_B", ks, ke, js, je, is, ie,
             KOKKOS_LAMBDA_3D {
                 // Set B1 directly by normalizing
-                //printf("%lf", b10 / G.gdet(Loci::center, j, i));
                 B_P(0, k, j, i) = b10 / G.gdet(Loci::center, j, i);
                 B_P(1, k, j, i) = 0.;
                 B_P(2, k, j, i) = 0.;
@@ -143,12 +131,12 @@ TaskStatus B_CD::SeedBField(MeshBlockData<Real> *rc, ParameterInput *pin)
                 break;
             case BSeedType::ryan:
                 // BR's smoothed poloidal in-torus
-                q = pow(sin(th), 3) * pow(r / rin, 3) * exp(-r / 400) * rho_av - min_rho_q;
+                q = m::pow(sin(th), 3) * m::pow(r / rin, 3) * exp(-r / 400) * rho_av - min_rho_q;
                 break;
             case BSeedType::r3s3:
                 // Just the r^3 sin^3 th term, proposed EHT standard MAD
                 // TODO split r3 here and r3s3
-                q = pow(r / rin, 3) * rho_av - min_rho_q;
+                q = m::pow(r / rin, 3) * rho_av - min_rho_q;
                 break;
             case BSeedType::gaussian:
                 // Pure vertical threaded field of gaussian strength with FWHM 2*rin (i.e. HM@rin)
@@ -156,17 +144,17 @@ TaskStatus B_CD::SeedBField(MeshBlockData<Real> *rc, ParameterInput *pin)
                 // Block is to avoid compiler whinging about initialization
                 {
                     Real x = (r / rin) * sin(th);
-                    Real sigma = 2 / sqrt(2 * log(2));
-                    Real u = x / fabs(sigma);
-                    q = (1 / (sqrt(2 * M_PI) * fabs(sigma))) * exp(-u * u / 2);
+                    Real sigma = 2 / m::sqrt(2 * log(2));
+                    Real u = x / m::abs(sigma);
+                    q = (1 / (m::sqrt(2 * M_PI) * m::abs(sigma))) * exp(-u * u / 2);
                 }
                 break;
-            case BSeedType::constant:
-            case BSeedType::monopole:
-                q = 0; // This shouldn't be reached, cases are handled above
+            default:
+                // This shouldn't be reached.  Could squawk here?
+                break;
             }
 
-            A3(j, i) = max(q, 0.);
+            A3(j, i) = m::max(q, 0.);
         }
     );
 
@@ -179,12 +167,7 @@ TaskStatus B_CD::SeedBField(MeshBlockData<Real> *rc, ParameterInput *pin)
             B_P(2, k, j, i) = 0.;
         }
     );
-    pmb->par_for("first_U_B", ks, ke, js, je, is, ie,
-        KOKKOS_LAMBDA_3D {
-            // Use the "other" P to U, because we're content that psi = 0 to begin
-            B_FluxCT::p_to_u(G, B_P, k, j, i, B_U);
-        }
-    );
+    B_FluxCT::PtoU(rc);
 
     return TaskStatus::complete;
 }

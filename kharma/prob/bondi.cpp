@@ -34,15 +34,13 @@
 
 #include "bondi.hpp"
 
-using namespace std;
-
 /**
  * Initialization of a Bondi problem with specified sonic point, BH mdot, and horizon radius
- * TODO mdot and rs are redundant and should be merged into one parameter
+ * TODO mdot and rs are redundant and should be merged into one parameter. Uh, no.
  */
 TaskStatus InitializeBondi(MeshBlockData<Real> *rc, ParameterInput *pin)
 {
-    FLAG("Initializing Bondi problem");
+    Flag(rc, "Initializing Bondi problem");
     auto pmb = rc->GetBlockPointer();
 
     const Real mdot = pin->GetOrAddReal("bondi", "mdot", 1.0);
@@ -57,13 +55,13 @@ TaskStatus InitializeBondi(MeshBlockData<Real> *rc, ParameterInput *pin)
     // Set the whole domain to the analytic solution to begin
     SetBondi(rc);
 
-    FLAG("Initialized");
+    Flag(rc, "Initialized");
     return TaskStatus::complete;
 }
 
 TaskStatus SetBondi(MeshBlockData<Real> *rc, IndexDomain domain, bool coarse)
 {
-    FLAG("Setting Bondi zones");
+    Flag(rc, "Setting Bondi zones");
     auto pmb = rc->GetBlockPointer();
 
     PackIndexMap prims_map, cons_map;
@@ -98,10 +96,11 @@ TaskStatus SetBondi(MeshBlockData<Real> *rc, IndexDomain domain, bool coarse)
     pmb->par_for("bondi_boundary", kb_e.s, kb_e.e, jb_e.s, jb_e.e, ibs, ibe,
         KOKKOS_LAMBDA_3D {
             get_prim_bondi(G, cs, P, m_p, gam, bl, ks, mdot, rs, k, j, i);
+            // TODO all flux
             GRMHD::p_to_u(G, P, m_p, gam, k, j, i, U, m_u);
         }
     );
 
-    FLAG("Set");
+    Flag(rc, "Set");
     return TaskStatus::complete;
 }

@@ -41,7 +41,7 @@ std::shared_ptr<StateDescriptor> Reductions::Initialize(ParameterInput *pin)
     auto pkg = std::make_shared<StateDescriptor>("Reductions");
     Params &params = pkg->AllParams();
 
-    bool add_zones = pin->GetOrAddBoolean("reductions", "add_zones_accretion", true);
+    bool add_zones = pin->GetOrAddBoolean("reductions", "add_zones_accretion", false);
     params.Add("add_zones", add_zones);
     bool add_fluxes = pin->GetOrAddBoolean("reductions", "add_fluxes_accretion", true);
     params.Add("add_fluxes", add_fluxes);
@@ -87,7 +87,7 @@ std::shared_ptr<StateDescriptor> Reductions::Initialize(ParameterInput *pin)
         hst_vars.emplace_back(parthenon::HistoryOutputVar(UserHistoryOperation::sum, TotalL, "Ang_Mom"));
 
         hst_vars.emplace_back(parthenon::HistoryOutputVar(UserHistoryOperation::sum, TotalEHTLum, "EHT_Lum_Proxy"));
-        hst_vars.emplace_back(parthenon::HistoryOutputVar(UserHistoryOperation::sum, TotalJetLum, "Jet_Lum"));
+        hst_vars.emplace_back(parthenon::HistoryOutputVar(UserHistoryOperation::sum, JetLum_50, "Jet_Lum"));
     }
     // Keep a slightly more granular log of flags than the usual dump cadence
     if (add_flags) {
@@ -96,6 +96,7 @@ std::shared_ptr<StateDescriptor> Reductions::Initialize(ParameterInput *pin)
     }
 
     // Possible additions:
+    // 0. option for "verbose" logs of particular flags hit, using new functions
     // 1. total 3- and 4-current numbers (best to add in "current" package)
     // 2. Luminosity proxy sums over smaller areas, e.g. just disk, just disk 3-10M, etc
     // 3. Total output power, using betagamma and/or just T^0_1 > 0

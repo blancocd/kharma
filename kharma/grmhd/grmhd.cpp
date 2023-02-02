@@ -32,9 +32,6 @@
  *  OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-/**
- * GRMHD package.  Manipulations on GRMHD 
- */
 #include "grmhd.hpp"
 
 #include <memory>
@@ -49,33 +46,36 @@
 #include "boundaries.hpp"
 #include "current.hpp"
 #include "debug.hpp"
-#include "fixup.hpp"
 #include "floors.hpp"
-#include "fluxes.hpp"
+#include "flux.hpp"
 #include "gr_coordinates.hpp"
+#include "grmhd.hpp"
 #include "kharma.hpp"
-#include "mhd_functions.hpp"
-#include "source.hpp"
+#include "grmhd_functions.hpp"
 #include "U_to_P.hpp"
 
 using namespace parthenon;
-// Need to access these directly for reductions
-using namespace Kokkos;
 
+
+/**
+ * GRMHD package.  Global operations on General Relativistic Magnetohydrodynamic systems.
+ */
 namespace GRMHD
 {
 
-std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin)
+std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin, Packages_t packages)
 {
     // This function builds and returns a "StateDescriptor" or "Package" object.
     // The most important part of this object is a member of type "Params",
     // which acts more or less like a Python dictionary:
     // it puts values into a map of names->objects, where "objects" are usually
     // floats, strings, and ints, but can be arbitrary classes.
-    // This "dictionary" is *not* immutable, but should be treated as such
-    // in every package except "Globals".
+    // This "dictionary" is *not* totally immutable, but should be treated
+    // as such in every package except "Globals".
     auto pkg = std::make_shared<StateDescriptor>("GRMHD");
     Params &params = pkg->AllParams();
+
+    // =================================== PARAMETERS ===================================
 
     // Add the problem name, so we can be C++ noobs and special-case on string contents
     std::string problem_name = pin->GetString("parthenon/job", "problem_id");
@@ -100,15 +100,26 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin)
         params.Add("use_hlle", false);
     }
 
+    // These parameters are put in "parthenon/time" to match others, but ultimately we should
+    // override the parthenon timestep chooser
     // Minimum timestep, if something about the sound speed goes wonky. Probably won't save you :)
-    // know what we're doing modifying "parthenon/time" -- subclass 
-    double dt_min = pin->GetOrAddReal("parthenon/time", "dt_min", 1.e-4);
+    double dt_min = pin->GetOrAddReal("parthenon/time", "dt_min", 1.e-5);
     params.Add("dt_min", dt_min);
-    // Starting timestep, in case we're restarting
+    // Starting timestep: guaranteed step 1 timestep returned by EstimateTimestep,
+    // usually matters most for restarts
     double dt_start = pin->GetOrAddReal("parthenon/time", "dt", dt_min);
     params.Add("dt_start", dt_start);
     double max_dt_increase = pin->GetOrAddReal("parthenon/time", "max_dt_increase", 2.0);
     params.Add("max_dt_increase", max_dt_increase);
+
+    // Alternatively, you can start with (or just always use) the light (phase) speed crossing time
+    // of the smallest zone.  Useful when you're not sure of/modeling the characteristic velocities
+    bool start_dt_light = pin->GetOrAddBoolean("parthenon/time", "start_dt_light", false);
+    params.Add("start_dt_light", start_dt_light);
+    bool use_dt_light = pin->GetOrAddBoolean("parthenon/time", "use_dt_light", false);
+    params.Add("use_dt_light", use_dt_light);
+    bool use_dt_light_phase_speed = pin->GetOrAddBoolean("parthenon/time", "use_dt_light_phase_speed", false);
+    params.Add("use_dt_light_phase_speed", use_dt_light_phase_speed);
 
     // Reconstruction scheme: plm, weno5, ppm...
     std::string recon = pin->GetOrAddString("GRMHD", "reconstruction", "weno5");
@@ -123,8 +134,8 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin)
     // } else if (recon == "weno5_lower_poles") {
     //     params.Add("recon", ReconstructionType::weno5_lower_poles);
     } else {
-        cerr << "Reconstruction type not supported!  Supported reconstructions:" << endl;
-        cerr << "donor_cell, linear_mc, linear_vl, weno5" << endl;
+        std::cerr << "Reconstruction type not supported!  Supported reconstructions:" << std::endl;
+        std::cerr << "donor_cell, linear_mc, linear_vl, weno5" << std::endl;
         throw std::invalid_argument("Unsupported reconstruction algorithm!");
     }
 
@@ -136,63 +147,32 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin)
     int extra_checks = pin->GetOrAddInteger("debug", "extra_checks", 0);
     params.Add("extra_checks", extra_checks);
 
-    // Floor parameters
-    // Floors for GRMHD quantities are handled in this package, since they
-    // have a tendency to interact with fixing (& causing!) UtoP failures,
-    // so we want to have control of the order in which floors/fixUtoP are
-    // applied.
-    double rho_min_geom, u_min_geom;
-    if (pin->GetBoolean("coordinates", "spherical")) {
-        // In spherical systems, floors drop as r^2, so set them higher by default
-        rho_min_geom = pin->GetOrAddReal("floors", "rho_min_geom", 1.e-6);
-        u_min_geom = pin->GetOrAddReal("floors", "u_min_geom", 1.e-8);
-    } else {
-        rho_min_geom = pin->GetOrAddReal("floors", "rho_min_geom", 1.e-8);
-        u_min_geom = pin->GetOrAddReal("floors", "u_min_geom", 1.e-10);
-    }
-    params.Add("rho_min_geom", rho_min_geom);
-    params.Add("u_min_geom", u_min_geom);
-    double floor_r_char = pin->GetOrAddReal("floors", "r_char", 10);
-    params.Add("floor_r_char", floor_r_char);
-
-    double bsq_over_rho_max = pin->GetOrAddReal("floors", "bsq_over_rho_max", 1e20);
-    params.Add("bsq_over_rho_max", bsq_over_rho_max);
-    double bsq_over_u_max = pin->GetOrAddReal("floors", "bsq_over_u_max", 1e20);
-    params.Add("bsq_over_u_max", bsq_over_u_max);
-    double u_over_rho_max = pin->GetOrAddReal("floors", "u_over_rho_max", 1e20);
-    params.Add("u_over_rho_max", u_over_rho_max);
-    double ktot_max = pin->GetOrAddReal("floors", "ktot_max", 1e20);
-    params.Add("ktot_max", ktot_max);
-
-    double gamma_max = pin->GetOrAddReal("floors", "gamma_max", 50.);
-    params.Add("gamma_max", gamma_max);
-
-    bool temp_adjust_u = pin->GetOrAddBoolean("floors", "temp_adjust_u", false);
-    params.Add("temp_adjust_u", temp_adjust_u);
-    bool fluid_frame = pin->GetOrAddBoolean("floors", "fluid_frame", false);
-    params.Add("fluid_frame", fluid_frame);
-    bool adjust_k = pin->GetOrAddBoolean("floors", "adjust_k", true);
-    params.Add("adjust_k", adjust_k);
-
-    // Disable all floors.  It is obviously tremendously inadvisable to
-    // set this option to true
-    bool disable_floors = pin->GetOrAddBoolean("floors", "disable_floors", false);
-    params.Add("disable_floors", disable_floors);
-
-    // Option to disable checking the fluxes at boundaries
+    // Option to disable checking the fluxes at boundaries:
+    // Prevent inflow at outer boundaries
     bool check_inflow_inner = pin->GetOrAddBoolean("bounds", "check_inflow_inner", true);
     params.Add("check_inflow_inner", check_inflow_inner);
     bool check_inflow_outer = pin->GetOrAddBoolean("bounds", "check_inflow_outer", true);
     params.Add("check_inflow_outer", check_inflow_outer);
+    // Ensure fluxes through the zero-size face at the pole are zero
     bool fix_flux_pole = pin->GetOrAddBoolean("bounds", "fix_flux_pole", true);
     params.Add("fix_flux_pole", fix_flux_pole);
 
-
-    // Performance options
-    // Packed communications kernels, exchanging all boundary buffers of an MPI process
-    // together.  Useful if # MeshBlocks is > # MPI ranks
-    bool pack_comms = pin->GetOrAddBoolean("perf", "pack_comms", true);
-    params.Add("pack_comms", pack_comms);
+    // Driver options
+    // The two current drivers are "harm" or "imex", with the former being the usual KHARMA
+    // driver, and the latter supporting implicit stepping of some or all variables
+    auto driver_type = pin->GetString("driver", "type"); // This is set in kharma.cpp
+    params.Add("driver_type", driver_type);
+    // The ImEx driver is necessary to evolve implicitly, but doesn't require it.  Using explicit
+    // updates for GRMHD vars is useful for testing, or if adding just a couple of implicit variables
+    // Doing EGRMHD requires implicit evolution of GRMHD variables, of course
+    auto implicit_grmhd = (driver_type == "imex") &&
+                          (pin->GetBoolean("emhd", "on") || pin->GetOrAddBoolean("GRMHD", "implicit", false));
+    params.Add("implicit", implicit_grmhd);
+    // Synchronize boundary variables twice.  Ensures KHARMA is agnostic to the breakdown
+    // of meshblocks, at the cost of twice the MPI overhead, for potentially much worse strong scaling.
+    bool two_sync = pin->GetOrAddBoolean("perf", "two_sync", false) ||
+                    pin->GetOrAddBoolean("driver", "two_sync", false);
+    params.Add("two_sync", two_sync);
 
     // Adaptive mesh refinement options
     // Only active if "refinement" and "numlevel" parameters allow
@@ -200,6 +180,13 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin)
     params.Add("refine_tol", refine_tol);
     Real derefine_tol = pin->GetOrAddReal("GRMHD", "derefine_tol", 0.05);
     params.Add("derefine_tol", derefine_tol);
+
+    // =================================== FIELDS ===================================
+
+    // In addition to "params", the StateDescriptor/Package object carries "Fields"
+    // These represent any variables we want to keep track of across the grid, and
+    // generally inherit the size of the MeshBlock (for "Cell" fields) or some
+    // closely-related size (for "Face" and "Edge" fields)
 
     // Add flags to distinguish groups of fields.
     // This is stretching what the "Params" object should really be carrying,
@@ -217,31 +204,48 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin)
     MetadataFlag isMHD = Metadata::AllocateNewFlag("MHD");
     params.Add("MHDFlag", isMHD);
 
-    // In addition to "params", the StateDescriptor/Package object carries "Fields"
-    // These represent any variables we want to keep track of across the grid, and
-    // generally inherit the size of the MeshBlock (for "Cell" fields) or some
-    // closely-related size (for "Face" and "Edge" fields)
+    std::vector<MetadataFlag> flags_prim, flags_cons;
+    if (driver_type == "harm") { // Normal operation
+        // As mentioned elsewhere, KHARMA treats the conserved variables as the independent ones,
+        // and the primitives as "Derived"
+        // Primitives are still used for reconstruction, physical boundaries, and output, and are
+        // generally the easier to understand quantities
+        // Note especially their ghost zones are also filled! This is less efficient than syncing just
+        // one or the other, but allows the most flexibility for reasons that should be clearer in harm_driver.cpp
+        flags_prim = std::vector<MetadataFlag>({Metadata::Real, Metadata::Cell, Metadata::Derived,
+                                                Metadata::FillGhost, Metadata::Restart,
+                                                isPrimitive, isHD, isMHD});
+        // Conserved variables are actually rho*u^0 & T^0_mu, but are named after the prims for consistency
+        // We will rarely need the conserved variables by name, we will mostly be treating them as a group
+        flags_cons = std::vector<MetadataFlag>({Metadata::Real, Metadata::Cell, Metadata::Independent,
+                                                Metadata::WithFluxes, Metadata::FillGhost, Metadata::Restart,
+                                                Metadata::Conserved, isHD, isMHD});
+    } else if (driver_type == "imex") { // ImEx driver
+        // When evolving (E)GRMHD implicitly, we instead mark the primitive variables to be synchronized.
+        // This won't work for AMR, but it fits much better with the implicit solver, which expects
+        // primitive variable inputs and produces primitive variable results.
 
-    // As mentioned elsewhere, KHARMA treats the conserved variables as the independent ones,
-    // and the primitives as "Derived"
-    // Primitives are still used for reconstruction, physical boundaries, and output, and are
-    // generally the easier to understand quantities
-    std::vector<int> s_vector({3});
-    auto flags_prim = std::vector<MetadataFlag>({Metadata::Real, Metadata::Cell, Metadata::Derived,
-                                                      Metadata::Restart, isPrimitive, isHD, isMHD});
+        // Mark whether to evolve our variables via the explicit or implicit step inside the driver
+        MetadataFlag areWeImplicit = (implicit_grmhd) ? packages.Get("Implicit")->Param<MetadataFlag>("ImplicitFlag")
+                                                      : packages.Get("Implicit")->Param<MetadataFlag>("ExplicitFlag");
+
+        flags_prim = std::vector<MetadataFlag>({Metadata::Real, Metadata::Cell, Metadata::Derived, areWeImplicit,
+                                                Metadata::FillGhost, Metadata::Restart, isPrimitive, isHD, isMHD});
+        flags_cons = std::vector<MetadataFlag>({Metadata::Real, Metadata::Cell, Metadata::Independent, areWeImplicit,
+                                                Metadata::WithFluxes, Metadata::Conserved, isHD, isMHD});
+    }
+
+    // With the flags sorted & explained, actually declaring fields is easy.
     auto m = Metadata(flags_prim);
     pkg->AddField("prims.rho", m);
     pkg->AddField("prims.u", m);
+    // We add the "Vector" flag and a size to vectors
     auto flags_prim_vec(flags_prim);
     flags_prim_vec.push_back(Metadata::Vector);
+    std::vector<int> s_vector({NVEC});
     m = Metadata(flags_prim_vec, s_vector);
     pkg->AddField("prims.uvec", m);
 
-    // Conserved variables are actualy rho*u^0 & T^0_mu, but are named after the prims for consistency
-    // We will rarely need the conserved variables by name, we will mostly be treating them as a group
-    auto flags_cons = std::vector<MetadataFlag>({Metadata::Real, Metadata::Cell, Metadata::Independent,
-                                                      Metadata::WithFluxes, Metadata::FillGhost, Metadata::Restart,
-                                                      Metadata::Conserved, isHD, isMHD});
     m = Metadata(flags_cons);
     pkg->AddField("cons.rho", m);
     pkg->AddField("cons.u", m);
@@ -250,44 +254,34 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin)
     m = Metadata(flags_cons_vec, s_vector);
     pkg->AddField("cons.uvec", m);
 
-    bool use_b = (pin->GetString("b_field", "solver") != "none");
-    params.Add("use_b", use_b);
-    if (!use_b) {
-        // Declare placeholder fields only if not using another package providing B field.
-        // This should be redundant w/using the "Overridable" flag but has caused problems in the past.
-        // The ultimate goal is to support never defining these fields in the first place, i.e. true GRHD
-        // without memory or computation penalties.
-
-        // Remove the "HD" flag from B, since it is not that
-        flags_prim_vec.erase(std::remove(flags_prim_vec.begin(), flags_prim_vec.end(), isHD), flags_prim_vec.end());
-        // Remove the "Restart" flag, since unlike the fluid prims, prims.B is fully redundant
-        flags_prim_vec.erase(std::remove(flags_prim_vec.begin(), flags_prim_vec.end(), Metadata::Restart), flags_prim_vec.end());
-        flags_prim_vec.push_back(Metadata::Overridable);
-        m = Metadata(flags_prim_vec, s_vector);
-        pkg->AddField("prims.B", m);
-        flags_cons_vec.erase(std::remove(flags_cons_vec.begin(), flags_cons_vec.end(), isHD), flags_cons_vec.end());
-        flags_cons_vec.push_back(Metadata::Overridable);
-        m = Metadata(flags_cons_vec, s_vector);
-        pkg->AddField("cons.B", m);
-    }
+    // No magnetic fields here. KHARMA should operate fine in GRHD without them,
+    // so they are allocated only by B field packages.
 
     // Maximum signal speed (magnitude).
     // Needs to be cached from flux updates for calculating the timestep later
     m = Metadata({Metadata::Real, Metadata::Cell, Metadata::Derived, Metadata::OneCopy}, s_vector);
     pkg->AddField("ctop", m);
 
-    // Temporary fix just for being able to save field values
-    // Should switch these to "Integer" fields when Parthenon supports it
-    m = Metadata({Metadata::Real, Metadata::Cell, Metadata::Derived, Metadata::OneCopy});
+    // Flag denoting UtoP inversion failures
+    // Only needed if we're actually calling UtoP, but always allocated as it's retrieved often
+    // Needs boundary sync if treating primitive variables as fundamental
+    if (driver_type == "imex" && !implicit_grmhd) {
+        m = Metadata({Metadata::Real, Metadata::Cell, Metadata::Derived, Metadata::OneCopy, Metadata::FillGhost});
+    } else {
+        m = Metadata({Metadata::Real, Metadata::Cell, Metadata::Derived, Metadata::OneCopy});
+    }
     pkg->AddField("pflag", m);
-    pkg->AddField("fflag", m);
+
+    if (!implicit_grmhd) {
+        // If we're using a step that requires calling UtoP, register it
+        // Calling this messes up implicit stepping, so we only register it here
+        pkg->FillDerivedBlock = GRMHD::FillDerivedBlock;
+    }
 
     // Finally, the StateDescriptor/Package object determines the Callbacks Parthenon makes to
     // a particular package -- that is, some portion of the things that the package needs done
     // at each step, which must be done at specific times.
-    // See the documentation on each of these functions for their purpose and call context.
-    pkg->FillDerivedBlock = GRMHD::UtoP;
-    pkg->PostFillDerivedBlock = GRMHD::PostUtoP;
+    // See the header files defining each of these functions for their purpose and call context.
     pkg->CheckRefinementBlock = GRMHD::CheckRefinement;
     pkg->EstimateTimestepBlock = GRMHD::EstimateTimestep;
     pkg->PostStepDiagnosticsMesh = GRMHD::PostStepDiagnostics;
@@ -295,15 +289,11 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin)
     return pkg;
 }
 
-void UtoP(MeshBlockData<Real> *rc)
+void UtoP(MeshBlockData<Real> *rc, IndexDomain domain, bool coarse)
 {
-    FLAG("Filling Primitives");
+    Flag(rc, "Filling Primitives");
     auto pmb = rc->GetBlockPointer();
     const auto& G = pmb->coords;
-
-    int n1 = pmb->cellbounds.ncellsi(IndexDomain::entire);
-    int n2 = pmb->cellbounds.ncellsj(IndexDomain::entire);
-    int n3 = pmb->cellbounds.ncellsk(IndexDomain::entire);
 
     PackIndexMap prims_map, cons_map;
     auto U = GRMHD::PackMHDCons(rc, cons_map);
@@ -328,12 +318,19 @@ void UtoP(MeshBlockData<Real> *rc)
     // We could (did formerly) save some time here by running over
     // only zones with initialized conserved variables, but the domain
     // of such values is not rectangular in the current handling
-    const IndexRange ib = rc->GetBoundsI(IndexDomain::entire);
-    const IndexRange jb = rc->GetBoundsJ(IndexDomain::entire);
-    const IndexRange kb = rc->GetBoundsK(IndexDomain::entire);
+    auto bounds = coarse ? pmb->c_cellbounds : pmb->cellbounds;
+    const IndexRange ib = bounds.GetBoundsI(domain);
+    const IndexRange jb = bounds.GetBoundsJ(domain);
+    const IndexRange kb = bounds.GetBoundsK(domain);
+    const IndexRange ib_b = bounds.GetBoundsI(IndexDomain::interior);
+    const IndexRange jb_b = bounds.GetBoundsJ(IndexDomain::interior);
+    const IndexRange kb_b = bounds.GetBoundsK(IndexDomain::interior);
+
     pmb->par_for("U_to_P", kb.s, kb.e, jb.s, jb.e, ib.s, ib.e,
         KOKKOS_LAMBDA_3D {
-            if (P(m_p.RHO, k, j, i) != 0. || P(m_p.UU, k, j, i) != 0.) {
+            if (inside(k, j, i, kb_b, jb_b, ib_b) ||
+                m::abs(P(m_p.RHO, k, j, i)) > SMALL || m::abs(P(m_p.UU, k, j, i)) > SMALL) {
+                // Run over all interior zones and any initialized ghosts
                 pflag(k, j, i) = GRMHD::u_to_p(G, U, m_u, gam, k, j, i, Loci::center, P, m_p);
             } else {
                 // Don't *use* un-initialized zones for fixes, but also don't *fix* them
@@ -341,27 +338,12 @@ void UtoP(MeshBlockData<Real> *rc)
             }
         }
     );
-    FLAG("Filled");
-}
-
-void PostUtoP(MeshBlockData<Real> *rc)
-{
-    FLAG("Fixing Derived");
-
-    // Apply floors
-    if (!rc->GetBlockPointer()->packages.Get("GRMHD")->Param<bool>("disable_floors")) {
-        GRMHD::ApplyFloors(rc);
-    }
-
-    // Fix inversion errors computing P from U, by averaging adjacent zones
-    GRMHD::FixUtoP(rc);
-
-    FLAG("Fixed");
+    Flag(rc, "Filled");
 }
 
 Real EstimateTimestep(MeshBlockData<Real> *rc)
 {
-    FLAG("Estimating timestep");
+    Flag(rc, "Estimating timestep");
     auto pmb = rc->GetBlockPointer();
     IndexRange ib = pmb->cellbounds.GetBoundsI(IndexDomain::interior);
     IndexRange jb = pmb->cellbounds.GetBoundsJ(IndexDomain::interior);
@@ -372,13 +354,35 @@ Real EstimateTimestep(MeshBlockData<Real> *rc)
     // TODO: move timestep limiter into an override of SetGlobalTimestep
     // TODO: move diagnostic printing to PostStepDiagnostics, now it's broken here
 
-    if (!pmb->packages.Get("Globals")->Param<bool>("in_loop")) {
-        double dt = pmb->packages.Get("GRMHD")->Param<double>("dt_start");
-        // Record this, since we'll use it to determine the max step next
-        pmb->packages.Get("Globals")->UpdateParam<double>("dt_last", dt);
-        return dt;
-    }
+    auto& globals = pmb->packages.Get("Globals")->AllParams();
+    const auto& grmhd_pars = pmb->packages.Get("GRMHD")->AllParams();
 
+    if (!globals.Get<bool>("in_loop")) {
+        if (grmhd_pars.Get<bool>("start_dt_light") ||
+            grmhd_pars.Get<bool>("use_dt_light")) {
+            // Estimate based on light crossing time
+            double dt = EstimateRadiativeTimestep(rc);
+            // This records a per-rank minimum,
+            // but Parthenon finds the global minimum anyway
+            if (globals.hasKey("dt_light")) {
+                if (dt < globals.Get<double>("dt_light"))
+                    globals.Update<double>("dt_light", dt);
+            } else {
+                globals.Add<double>("dt_light", dt);
+            }
+            return dt;
+        } else {
+            // Or Just take from parameters
+            double dt = grmhd_pars.Get<double>("dt_start");
+            // Record this, since we'll use it to determine the max step increase
+            globals.Update<double>("dt_last", dt);
+            return dt;
+        }
+    }
+    // If we're still using the light crossing time, skip the rest
+    if (grmhd_pars.Get<bool>("use_dt_light")) {
+        return globals.Get<double>("dt_light");
+    }
 
     typename Kokkos::MinMax<Real>::value_type minmax;
     pmb->par_reduce("ndt_min", kb.s, kb.e, jb.s, jb.e, ib.s, ib.e,
@@ -388,11 +392,11 @@ Real EstimateTimestep(MeshBlockData<Real> *rc)
                                    1 / (G.dx2v(j) / ctop(1, k, j, i)) +
                                    1 / (G.dx3v(k) / ctop(2, k, j, i)));
             // Effective "max speed" used for the timestep
-            double ctop_max_zone = min(G.dx1v(i), min(G.dx2v(j), G.dx3v(k))) / ndt_zone;
+            double ctop_max_zone = m::min(G.dx1v(i), m::min(G.dx2v(j), G.dx3v(k))) / ndt_zone;
 
-            if (!isnan(ndt_zone) && (ndt_zone < lminmax.min_val))
+            if (!m::isnan(ndt_zone) && (ndt_zone < lminmax.min_val))
                 lminmax.min_val = ndt_zone;
-            if (!isnan(ctop_max_zone) && (ctop_max_zone > lminmax.max_val))
+            if (!m::isnan(ctop_max_zone) && (ctop_max_zone > lminmax.max_val))
                 lminmax.max_val = ctop_max_zone;
         }
     , Kokkos::MinMax<Real>(minmax));
@@ -401,39 +405,84 @@ Real EstimateTimestep(MeshBlockData<Real> *rc)
     const double nctop = minmax.max_val;
 
     // Apply limits
-    const double cfl = pmb->packages.Get("GRMHD")->Param<double>("cfl");
-    const double dt_min = pmb->packages.Get("GRMHD")->Param<double>("dt_min");
-    const double dt_last = pmb->packages.Get("Globals")->Param<double>("dt_last");
-    const double dt_max = pmb->packages.Get("GRMHD")->Param<double>("max_dt_increase") * dt_last;
+    const double cfl = grmhd_pars.Get<double>("cfl");
+    const double dt_min = grmhd_pars.Get<double>("dt_min");
+    const double dt_last = globals.Get<double>("dt_last");
+    const double dt_max = grmhd_pars.Get<double>("max_dt_increase") * dt_last;
     const double ndt = clip(min_ndt * cfl, dt_min, dt_max);
 
     // Record max ctop, for constraint damping
-    if (nctop > pmb->packages.Get("Globals")->Param<Real>("ctop_max")) {
-        pmb->packages.Get("Globals")->UpdateParam<Real>("ctop_max", nctop);
+    if (nctop > globals.Get<Real>("ctop_max")) {
+        globals.Update<Real>("ctop_max", nctop);
     }
 
-#if 0
-    // Print stuff about the zone that set the timestep
-    // Warning that triggering this code slows the code down pretty badly (~1/3)
-    // TODO Fix this to work with multi-mesh, SYCL
-    if (pmb->packages.Get("GRMHD")->Param<int>("verbose") >= 3) {
-        auto fflag = rc->Get("fflag").data;
-        auto pflag = rc->Get("pflag").data;
-        pmb->par_for("ndt_min", kb.s, kb.e, jb.s, jb.e, ib.s, ib.e,
-            KOKKOS_LAMBDA_3D {
-                double ndt_zone = 1 / (1 / (G.dx1v(i) / ctop(0, k, j, i)) +
-                                       1 / (G.dx2v(j) / ctop(1, k, j, i)) +
-                                       1 / (G.dx3v(k) / ctop(2, k, j, i)));
-                if (ndt_zone == min_ndt) {
-                    printf("Timestep set by %d %d %d: pflag was %f and fflag was %f\n",
-                           i, j, k, pflag(k, j, i), fflag(k, j, i));
+    Flag(rc, "Estimated");
+    return ndt;
+}
+
+Real EstimateRadiativeTimestep(MeshBlockData<Real> *rc)
+{
+    Flag(rc, "Estimating shortest light crossing time");
+    auto pmb = rc->GetBlockPointer();
+    IndexRange ib = pmb->cellbounds.GetBoundsI(IndexDomain::interior);
+    IndexRange jb = pmb->cellbounds.GetBoundsJ(IndexDomain::interior);
+    IndexRange kb = pmb->cellbounds.GetBoundsK(IndexDomain::interior);
+    const auto& G = pmb->coords;
+
+    const auto& grmhd_pars = pmb->packages.Get("GRMHD")->AllParams();
+    const bool phase_speed = grmhd_pars.Get<bool>("use_dt_light_phase_speed");
+
+    const Real dx[GR_DIM] = {0., G.dx1v(0), G.dx2v(0), G.dx3v(0)};
+
+    // Leaving minmax in case the max phase speed is useful
+    typename Kokkos::MinMax<Real>::value_type minmax;
+    pmb->par_reduce("ndt_min", kb.s, kb.e, jb.s, jb.e, ib.s, ib.e,
+        KOKKOS_LAMBDA(const int k, const int j, const int i,
+                      typename Kokkos::MinMax<Real>::value_type &lminmax) {
+
+            double light_phase_speed = SMALL;
+            double dt_light_local = 0.;
+
+            if (phase_speed) {
+                for (int mu = 1; mu < GR_DIM; mu++) {
+                    if(m::pow(G.gcon(Loci::center, j, i, 0, mu), 2) -
+                        G.gcon(Loci::center, j, i, mu, mu)*G.gcon(Loci::center, j, i, 0, 0) >= 0.) {
+
+                        double cplus = m::abs((-G.gcon(Loci::center, j, i, 0, mu) +
+                                            m::sqrt(m::pow(G.gcon(Loci::center, j, i, 0, mu), 2) -
+                                                G.gcon(Loci::center, j, i, mu, mu)*G.gcon(Loci::center, j, i, 0, 0)))/
+                                            G.gcon(Loci::center, j, i, 0, 0));
+
+                        double cminus = m::abs((-G.gcon(Loci::center, j, i, 0, mu) -
+                                            m::sqrt(m::pow(G.gcon(Loci::center, j, i, 0, mu), 2) -
+                                                G.gcon(Loci::center, j, i, mu, mu)*G.gcon(Loci::center, j, i, 0, 0)))/
+                                            G.gcon(Loci::center, j, i, 0, 0));
+
+                        light_phase_speed = m::max(cplus,cminus);
+                    } else {
+                        light_phase_speed = SMALL;
+                    }
+
+                    dt_light_local += 1./(dx[mu]/light_phase_speed);
                 }
+            } else {
+                for (int mu = 1; mu < GR_DIM; mu++)
+                    dt_light_local += 1./dx[mu];
             }
-        );
-    }
-#endif
+            dt_light_local = 1/dt_light_local;
 
-    FLAG("Estimated");
+            if (!m::isnan(dt_light_local) && (dt_light_local < lminmax.min_val))
+                lminmax.min_val = dt_light_local;
+            if (!m::isnan(light_phase_speed) && (light_phase_speed > lminmax.max_val))
+                lminmax.max_val = light_phase_speed;
+        }
+    , Kokkos::MinMax<Real>(minmax));
+
+    // Just spit out dt
+    const double cfl = grmhd_pars.Get<double>("cfl");
+    const double ndt = minmax.min_val * cfl;
+
+    Flag(rc, "Estimated");
     return ndt;
 }
 
@@ -442,9 +491,10 @@ AmrTag CheckRefinement(MeshBlockData<Real> *rc)
     auto pmb = rc->GetBlockPointer();
     auto v = rc->Get("prims.rho").data;
 
-    IndexRange ib = pmb->cellbounds.GetBoundsI(IndexDomain::entire);
-    IndexRange jb = pmb->cellbounds.GetBoundsJ(IndexDomain::entire);
-    IndexRange kb = pmb->cellbounds.GetBoundsK(IndexDomain::entire);
+    IndexDomain domain = IndexDomain::interior;
+    IndexRange ib = pmb->cellbounds.GetBoundsI(domain);
+    IndexRange jb = pmb->cellbounds.GetBoundsJ(domain);
+    IndexRange kb = pmb->cellbounds.GetBoundsK(domain);
 
     typename Kokkos::MinMax<Real>::value_type minmax;
     pmb->par_reduce("check_refinement", kb.s, kb.e, jb.s, jb.e, ib.s, ib.e,
@@ -468,7 +518,7 @@ AmrTag CheckRefinement(MeshBlockData<Real> *rc)
 
 TaskStatus PostStepDiagnostics(const SimTime& tm, MeshData<Real> *md)
 {
-    FLAG("Printing GRMHD diagnostics");
+    Flag("Printing GRMHD diagnostics");
     auto pmesh = md->GetMeshPointer();
     auto pmb0 = md->GetBlockData(0)->GetBlockPointer();
     // Options
@@ -478,7 +528,7 @@ TaskStatus PostStepDiagnostics(const SimTime& tm, MeshData<Real> *md)
 
     // Debugging/diagnostic info about floor and inversion flags
     if (flag_verbose >= 1) {
-        FLAG("Printing flags");
+        Flag("Printing flags");
         CountPFlags(md, IndexDomain::interior, flag_verbose);
         CountFFlags(md, IndexDomain::interior, flag_verbose);
     }
@@ -486,6 +536,7 @@ TaskStatus PostStepDiagnostics(const SimTime& tm, MeshData<Real> *md)
     // Check for a soundspeed (ctop) of 0 or NaN
     // This functions as a "last resort" check to stop a
     // simulation on obviously bad data
+    // TODO also be able to print what zone dictated timestep
     if (extra_checks >= 1) {
         CheckNaN(md, X1DIR);
         if (pmesh->ndim > 1) CheckNaN(md, X2DIR);
@@ -495,11 +546,11 @@ TaskStatus PostStepDiagnostics(const SimTime& tm, MeshData<Real> *md)
     // Further checking for any negative values.  Floors should
     // prevent this, so we save it for dire debugging
     if (extra_checks >= 2) {
-        FLAG("Printing negative zones");
+        Flag("Printing negative zones");
         CheckNegative(md, IndexDomain::interior);
     }
 
-    FLAG("Printed");
+    Flag("Printed");
     return TaskStatus::complete;
 }
 

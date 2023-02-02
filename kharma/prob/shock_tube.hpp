@@ -2,8 +2,6 @@
 
 #include "decs.hpp"
 
-
-using namespace std;
 using namespace parthenon;
 
 /**
@@ -12,9 +10,9 @@ using namespace parthenon;
  * 
  * Stolen directly from iharm3D
  */
-void InitializeShockTube(MeshBlockData<Real> *rc, ParameterInput *pin)
+TaskStatus InitializeShockTube(MeshBlockData<Real> *rc, ParameterInput *pin)
 {
-    FLAG("Initializing Shock Tube problem");
+    Flag(rc, "Initializing Shock Tube problem");
     auto pmb = rc->GetBlockPointer();
     GridScalar rho = rc->Get("prims.rho").data;
     GridScalar u = rc->Get("prims.u").data;
@@ -24,7 +22,7 @@ void InitializeShockTube(MeshBlockData<Real> *rc, ParameterInput *pin)
     const auto& G = pmb->coords;
 
     const Real gam = pmb->packages.Get("GRMHD")->Param<Real>("gamma");
-    // TODO something sensible here 
+    // TODO some particular default shock
     const Real rhoL = pin->GetOrAddReal("shock", "rhoL", 0.0);
     const Real rhoR = pin->GetOrAddReal("shock", "rhoR", 0.0);
     const Real PL = pin->GetOrAddReal("shock", "PL", 0.0);
@@ -42,7 +40,7 @@ void InitializeShockTube(MeshBlockData<Real> *rc, ParameterInput *pin)
     const Real B3L = pin->GetOrAddReal("shock", "B3L", 0.0);
     const Real B3R = pin->GetOrAddReal("shock", "B3R", 0.0);
 
-    IndexDomain domain = IndexDomain::entire;
+    IndexDomain domain = IndexDomain::interior;
     IndexRange ib = pmb->cellbounds.GetBoundsI(domain);
     IndexRange jb = pmb->cellbounds.GetBoundsJ(domain);
     IndexRange kb = pmb->cellbounds.GetBoundsK(domain);
@@ -73,4 +71,6 @@ void InitializeShockTube(MeshBlockData<Real> *rc, ParameterInput *pin)
 
         // Set e- starting state
     }
+
+    return TaskStatus::complete;
 }

@@ -41,19 +41,21 @@
 namespace KHARMA {
 
 /**
- * Initialize the magnetic field (if still required), and renormalize it as
+ * Initialize the magnetic field (if it wasn't done in ProblemGenerator), and renormalize it as
  * is common practice for torus problems.
  * 
  * Since the latter operation is global, we perform this on the whole mesh
  * once initialization of all other problem data is completed.
  */
-void SeedAndNormalizeB(ParameterInput *pin, Mesh *pmesh);
+void SeedAndNormalizeB(ParameterInput *pin, std::shared_ptr<MeshData<Real>> md);
 
 /**
  * Functions run over the entire mesh after per-block initialization:
  * 1. Initialize magnetic field, which must be normalized globally to respect beta_min parameter
- * 2. Initial boundary sync, including primitive values
+ * 2. Any ad-hoc additions to fluid state, e.g. add hotspots etc.
+ * 3. Initial boundary sync to populate ghost zones
+ * 4. On restarts, reset any per-run parameters & clean up B field divergence if resizing the grid
  */
-void PostInitialize(ParameterInput *pin, Mesh *pmesh, bool is_restart);
+void PostInitialize(ParameterInput *pin, Mesh *pmesh, bool is_restart, bool is_resize);
 
 }

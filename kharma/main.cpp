@@ -36,11 +36,13 @@
 #include "decs.hpp"
 
 #include "boundaries.hpp"
+#include "imex_driver.hpp"
 #include "harm_driver.hpp"
 #include "kharma.hpp"
 #include "mpi.hpp"
 #include "post_initialize.hpp"
 #include "problem.hpp"
+#include "emhd/conducting_atmosphere.hpp"
 
 // Parthenon headers
 #include <parthenon/parthenon.hpp>
@@ -56,6 +58,25 @@
 // Print warnings about configuration
 #if DEBUG
 #warning "Compiling with debug"
+
+// Stacktrace on sigint. Amazingly useful
+#include <stdio.h>
+#include <execinfo.h>
+#include <signal.h>
+#include <stdlib.h>
+#include <unistd.h>
+void print_backtrace(int sig) {
+  void *array[100];
+  size_t size;
+
+  // get void*'s for all entries on the stack
+  size = backtrace(array, 100);
+
+  // print out all the frames to stderr
+  fprintf(stderr, "Error: signal %d:\n", sig);
+  backtrace_symbols_fd(array, size, STDERR_FILENO);
+  exit(1);
+}
 #endif
 
 using namespace parthenon;
@@ -68,10 +89,11 @@ using namespace parthenon;
  * sets of physical processes, while re-using particular physics packages to mix and match
  *
  * Currently available drivers:
- * HARM: GRMHD using LLF with zone-centered fields
+ * HARM: GRMHD using LLF with zone-centered fields, conserved variables are synchronized
+ * Imex: same functionality HARM but primitive variables are synchronized,
+ *       optionally uses per-zone implicit solve for some variables, for e.g. Extended GRMHD
  *
  * Future drivers?
- * KHARMA: GRMHD using LLF with face-centered fields
  * bhlight: GRMHD with Monte Carlo particle transport
  */
 int main(int argc, char *argv[])
@@ -80,14 +102,14 @@ int main(int argc, char *argv[])
 
     pman.app_input->ProcessPackages = KHARMA::ProcessPackages;
     pman.app_input->ProblemGenerator = KHARMA::ProblemGenerator;
-    pman.app_input->UserWorkBeforeOutput = KHARMA::FillOutput;
+    pman.app_input->MeshBlockUserWorkBeforeOutput = KHARMA::FillOutput;
     pman.app_input->PreStepMeshUserWorkInLoop = KHARMA::PreStepMeshUserWorkInLoop;
     pman.app_input->PostStepMeshUserWorkInLoop = KHARMA::PostStepMeshUserWorkInLoop;
     pman.app_input->PostStepDiagnosticsInLoop = KHARMA::PostStepDiagnostics;
 
     // Registering KHARMA's boundary functions here doesn't mean they will *always* run:
-    // in e.g. MHD Modes problem, all boundaries are handled by Parthenon and these don't run
-    // KHARMA sets them automatically in spherical coordinate systems.
+    // all periodic boundary conditions are handled by Parthenon.
+    // KHARMA sets the correct options automatically for spherical coordinate systems.
     pman.app_input->boundary_conditions[parthenon::BoundaryFace::inner_x1] = KBoundaries::InnerX1;
     pman.app_input->boundary_conditions[parthenon::BoundaryFace::outer_x1] = KBoundaries::OuterX1;
     pman.app_input->boundary_conditions[parthenon::BoundaryFace::inner_x2] = KBoundaries::InnerX2;
@@ -95,7 +117,7 @@ int main(int argc, char *argv[])
 
     // Parthenon init includes Kokkos, MPI, parses parameters & cmdline,
     // then calls ProcessPackages and ProcessProperties, then constructs the Mesh
-    FLAG("Parthenon Initializing");
+    Flag("Parthenon Initializing");
     auto manager_status = pman.ParthenonInit(argc, argv);
     if (manager_status == ParthenonStatus::complete) {
         pman.ParthenonFinalize();
@@ -105,46 +127,84 @@ int main(int argc, char *argv[])
         pman.ParthenonFinalize();
         return 1;
     }
-    FLAG("Parthenon Initialized");
+    Flag("Parthenon Initialized");
 
-    auto pin = pman.pinput.get();
-    auto pmesh = pman.pmesh.get();
-    auto papp = pman.app_input.get();
+#if DEBUG
+    // Replace Parthenon signal handlers with something that just prints a backtrace
+    signal(SIGINT, print_backtrace);
+    signal(SIGTERM, print_backtrace);
+    signal(SIGSEGV, print_backtrace);
+#endif
 
-    if(MPIRank0()) {
+    auto pin = pman.pinput.get(); // All parameters in the input file or command line
+    auto pmesh = pman.pmesh.get(); // The mesh, with list of blocks & locations, size, etc
+    auto papp = pman.app_input.get(); // The list of callback functions specified above
+
+    // Add magnetic field to the problem, initialize ghost zones.
+    // Implemented separately outside of MeshBlock since
+    // this usually involves global reductions for normalization
+    if(MPIRank0())
+        std::cout << "Running post-initialization tasks..." << std::endl;
+
+    auto prob = pin->GetString("parthenon/job", "problem_id");
+    bool is_restart = (prob == "resize_restart") || pman.IsRestart();
+    bool is_resize = (prob == "resize_restart") && !pman.IsRestart();
+    KHARMA::PostInitialize(pin, pmesh, is_restart, is_resize);
+    Flag("Post-initialization completed");
+
+    // Construct a temporary driver purely for parameter parsing
+    auto driver_type = pin->GetString("driver", "type");
+    if (driver_type == "harm") {
+        HARMDriver driver(pin, papp, pmesh);
+    } else if (driver_type == "imex") {
+        ImexDriver driver(pin, papp, pmesh);
+    } else {
+        throw std::invalid_argument("Expected driver type to be harm or imex!");
+    }
+
+    // We could still have set parameters during driver initialization
+    // Note the order here is *extremely important* as the first statement has a
+    // side effect which must occur on all MPI ranks
+    if(pin->GetOrAddBoolean("debug", "archive_parameters", false) && MPIRank0()) {
         // Write *all* parameters to a parfile for posterity
-        // TODO option to disable?
         std::ostringstream ss;
         auto itt_now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
         ss << "kharma_parsed_parameters_" << std::put_time(std::gmtime(&itt_now), "%FT%TZ") << ".par";
-        fstream pars;
+        std::fstream pars;
         pars.open(ss.str(), std::fstream::out | std::fstream::trunc);
         pin->ParameterDump(pars);
         pars.close();
-        // Also write them to console if we should be wordy
-        if (pin->GetInteger("debug", "verbose") > 0) {
-            // This dumps the full Kokkos config, useful for double-checking
-            // that the compile did what we wanted
-            ShowConfig();
-            pin->ParameterDump(cout);
-        }
+    }
+    // Also write parameters to console if we should be wordy
+    if ((pin->GetInteger("debug", "verbose") > 0) && MPIRank0()) {
+        // This dumps the full Kokkos config, useful for double-checking
+        // that the compile did what we wanted
+        ShowConfig();
+        pin->ParameterDump(std::cout);
     }
 
-    // Write the problem to the mesh.
-    // Implemented separately outside of MeshBlock since
-    // GRMHD initializaitons involve global reductions
-    if(MPIRank0())
-        cout << "Running post-initialization tasks..." << endl;
-    KHARMA::PostInitialize(pin, pmesh, pman.IsRestart());
+    // Then execute the driver. This is a Parthenon function inherited by our HARMDriver object,
+    // which will call MakeTaskCollection, then execute the tasks on the mesh for each portion
+    // of each step until a stop criterion is reached.
+    Flag("Executing Driver");
 
-    // Then construct & run the driver
-    HARMDriver driver(pin, papp, pmesh);
+    if (driver_type == "harm") {
+        std::cout << "Initializing and running KHARMA driver." << std::endl;
+        HARMDriver driver(pin, papp, pmesh);
+        auto driver_status = driver.Execute();
+    } else if (driver_type == "imex") {
+        std::cout << "Initializing and running IMEX driver." << std::endl;
+        ImexDriver driver(pin, papp, pmesh);
+        auto driver_status = driver.Execute();
+    }
 
-    FLAG("Executing Driver");
-    auto driver_status = driver.Execute();
-
+#ifndef KOKKOS_ENABLE_CUDA
+    // Cleanup our global NDArray
+    extern ParArrayND<double> p_bound;
+    p_bound.~ParArrayND<double>();
+#endif
     // Parthenon cleanup includes Kokkos, MPI
-    FLAG("Finalizing");
+    Flag("Finalizing");
     pman.ParthenonFinalize();
 
     return 0;
