@@ -8,6 +8,7 @@ if [[ $HOST == "lmc.astro.illinois.edu" ]]; then
   PREFIX_PATH=
   EXTRA_FLAGS="-DPARTHENON_DISABLE_MPI=ON"
 elif [[ $HOST == *".astro.illinois.edu" ]]; then
+  EXTRA_FLAGS="-DPARTHENON_DISABLE_MPI=OFF"
   if [[ $HOST == "bh29"* ]]; then
     # BH29: Zen2 AMD EPYC 7742
     HOST_ARCH="ZEN2"

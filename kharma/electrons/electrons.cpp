@@ -272,7 +272,7 @@ TaskStatus InitElectrons(MeshBlockData<Real> *rc, ParameterInput *pin)
             if (p == ktot_index) { // Initialize it even when using Hubble, it will be "erased" immediately after anyway in ApplyElectronHeating
                 // Initialize total entropy by definition,
                 e_P(p, k, j, i) = (gam - 1.) * u(k, j, i) * m::pow(rho(k, j, i), -gam);
-            } else if (pmb->packages.Get("GRMHD")->Param<string>("problem") != "hubble") {
+            } else if (pmb->packages.Get("GRMHD")->Param<std::string>("problem") != "hubble") {
                 // and e- entropy by given constant initial fraction
                 e_P(p, k, j, i) = (game - 1.) * fel0 * u(k, j, i) * m::pow(rho(k, j, i), -game);
             }
@@ -467,7 +467,7 @@ TaskStatus ApplyElectronHeating(MeshBlockData<Real> *rc_old, MeshBlockData<Real>
     const IndexRange myjb = pmb->cellbounds.GetBoundsJ(IndexDomain::interior);
     const IndexRange mykb = pmb->cellbounds.GetBoundsK(IndexDomain::interior);
     // A couple of the electron test problems add source terms
-    const string prob = pmb->packages.Get("GRMHD")->Param<string>("problem");
+    const std::string prob = pmb->packages.Get("GRMHD")->Param<std::string>("problem");
     if (prob == "driven_turbulence") { // Gaussian random field:
         const auto& G = pmb->coords;
         GridScalar rho = rc->Get("prims.rho").data;
@@ -533,17 +533,17 @@ TaskStatus ApplyElectronHeating(MeshBlockData<Real> *rc_old, MeshBlockData<Real>
             pmb->par_reduce("forced_mhd_normal_kick_normalization_A", mykb.s, mykb.e, myjb.s, myjb.e, myib.s, myib.e,
                 KOKKOS_LAMBDA_3D_REDUCE {
                     Real cell_mass = (rho(k, j, i) * G.dx3v(k) * G.dx2v(j) * G.dx1v(i));
-                    local_result += cell_mass * (pow(dv0[(i-4)*Nx1+(j-4)], 2) + pow(dv1[(i-4)*Nx1+(j-4)], 2));
+                    local_result += cell_mass * (m::pow(dv0[(i-4)*Nx1+(j-4)], 2) + m::pow(dv1[(i-4)*Nx1+(j-4)], 2));
                 }
             , A_reducer);
             pmb->par_reduce("forced_mhd_normal_kick_init_e", mykb.s, mykb.e, myjb.s, myjb.e, myib.s, myib.e,
                 KOKKOS_LAMBDA_3D_REDUCE {
                     Real cell_mass = (rho(k, j, i) * G.dx3v(k) * G.dx2v(j) * G.dx1v(i));
-                    local_result += 0.5 * cell_mass * (pow(uvec(0, k, j, i), 2) + pow(uvec(1, k, j, i), 2));
+                    local_result += 0.5 * cell_mass * (m::pow(uvec(0, k, j, i), 2) + m::pow(uvec(1, k, j, i), 2));
                 }
             , init_e_reducer);
 
-            Real norm_const = (-Bhalf + pow(pow(Bhalf,2) + A*2*dt_kick*edot, 0.5))/A;  // going from k:(0, 0), j:(4, 515), i:(4, 515) inclusive
+            Real norm_const = (-Bhalf + m::pow(m::pow(Bhalf,2) + A*2*dt_kick*edot, 0.5))/A;  // going from k:(0, 0), j:(4, 515), i:(4, 515) inclusive
             pmb->par_for("forced_mhd_normal_kick_setting", mykb.s, mykb.e, myjb.s, myjb.e, myib.s, myib.e,
                 KOKKOS_LAMBDA_3D {
                     grf_normalized(0, k, j, i) = (dv0[(i-4)*Nx1+(j-4)]*norm_const);
@@ -561,7 +561,7 @@ TaskStatus ApplyElectronHeating(MeshBlockData<Real> *rc_old, MeshBlockData<Real>
             pmb->par_reduce("forced_mhd_normal_kick_finl_e", mykb.s, mykb.e, myjb.s, myjb.e, myib.s, myib.e,
                 KOKKOS_LAMBDA_3D_REDUCE {
                     Real cell_mass = (rho(k, j, i) * G.dx3v(k) * G.dx2v(j) * G.dx1v(i));
-                    local_result += 0.5 * cell_mass * (pow(uvec(0, k, j, i), 2) + pow(uvec(1, k, j, i), 2));
+                    local_result += 0.5 * cell_mass * (m::pow(uvec(0, k, j, i), 2) + m::pow(uvec(1, k, j, i), 2));
                 }
             , finl_e_reducer);
             printf("%.32f\n", A); printf("%.32f\n", Bhalf); printf("%.32f\n", norm_const);
@@ -578,9 +578,6 @@ TaskStatus ApplyElectronHeating(MeshBlockData<Real> *rc_old, MeshBlockData<Real>
 // Only called for Hubble flow problem
 TaskStatus ApplyHubbleHeating(MeshBlockData<Real> * mbase) {
     auto pmb0 = mbase->GetBlockPointer();
-    const string prob = pmb0->packages.Get("GRMHD")->Param<string>("problem");
-    if (prob != "rest_conserve" && prob != "hubble") return TaskStatus::complete;
-
     Flag(mbase, "Applying Hubble heating");
 
     PackIndexMap prims_map;
@@ -592,7 +589,7 @@ TaskStatus ApplyHubbleHeating(MeshBlockData<Real> * mbase) {
     const Real v0 = pmb0->packages.Get("GRMHD")->Param<Real>("v0");
     const Real ug0 = pmb0->packages.Get("GRMHD")->Param<Real>("ug0");
     const Real gam = pmb0->packages.Get("GRMHD")->Param<Real>("gamma");
-    const Real Q = (ug0 * v0 * (gam - 2) / pow(1 + v0 * t, 3));
+    const Real Q = (ug0 * v0 * (gam - 2) / m::pow(1 + v0 * t, 3));
 
     IndexDomain domain = IndexDomain::interior;
     auto ib = mbase->GetBoundsI(domain);

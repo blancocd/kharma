@@ -61,8 +61,8 @@ TaskStatus InitializeNoh(MeshBlockData<Real> *rc, ParameterInput *pin)
     const Real center = (x1min + x1max) / 2.;
 
     // Given Mach and knowing that v = 1e-3 and rho = 1, we calculate u
-    Real cs2 = pow(v0, 2)/pow(mach, 2);
-    double gamma = 1. / sqrt(1. - pow(v0, 2)); // Since we are in flat space
+    Real cs2 = m::pow(v0, 2)/m::pow(mach, 2);
+    double gamma = 1. / m::sqrt(1. - m::pow(v0, 2)); // Since we are in flat space
     Real P = rho0 * cs2 / (gam*(gam-1) - cs2*gam);
     if (zero_ug) P = 0;
 

@@ -94,7 +94,7 @@ TaskCollection ImexDriver::MakeTaskCollection(BlockList_t &blocks, int stage)
         // first make other useful containers
         auto &base = pmb->meshblock_data.Get();
         if (stage == 1) {
-            auto t_heating_test = tl.AddTask(t_none, Electrons::ApplyHubbleHeating, base.get());
+            if (prob == "hubble") auto t_heating_test = tl.AddTask(t_none, Electrons::ApplyHubbleHeating, base.get());
             pmb->meshblock_data.Add("dUdt", base);
             for (int i = 1; i < integrator->nstages; i++)
                 pmb->meshblock_data.Add(stage_name[i], base);
@@ -333,7 +333,7 @@ TaskCollection ImexDriver::MakeTaskCollection(BlockList_t &blocks, int stage)
         auto t_heating_test = t_set_bc;
         if (prob == "hubble" && stage == 2) {
             // TODO (later) allow problems to add source terms & boundary conditions in *problem* definitions with callbacks
-            t_heating_test = tl.AddTask(t_set_bc, Electrons::ApplyHeating, mbd_sub_step_final.get());
+            t_heating_test = tl.AddTask(t_set_bc, Electrons::ApplyHubbleHeating, mbd_sub_step_final.get());
         }
         auto t_heat_electrons = t_heating_test;
         if (use_electrons) {

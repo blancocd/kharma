@@ -52,8 +52,8 @@ TaskStatus InitializeHubble(MeshBlockData<Real> *rc, ParameterInput *pin)
     int counter = -5.0;
     Params& g_params = pmb->packages.Get("GRMHD")->AllParams();
     if(!g_params.hasKey("counter")) g_params.Add("counter", counter, true);
-    Real rho0 = (mach/v0) * sqrt(gam*(gam-1));
-    Real ug0  = (v0/mach) / sqrt(gam*(gam-1));
+    Real rho0 = (mach/v0) * m::sqrt(gam*(gam-1));
+    Real ug0  = (v0/mach) / m::sqrt(gam*(gam-1));
     if(!g_params.hasKey("rho0")) g_params.Add("rho0", rho0);
     if(!g_params.hasKey("v0"))  g_params.Add("v0", v0);
     if(!g_params.hasKey("ug0")) g_params.Add("ug0", ug0);
@@ -106,7 +106,7 @@ TaskStatus SetHubble(MeshBlockData<Real> *rc, IndexDomain domain, bool coarse)
     
     // Setting as in equation 37
     Real toberho = rho0 / (1. + v0*t);
-    Real tobeu  = ug0 / pow(1 + v0*t, 2);
+    Real tobeu  = ug0 / m::pow(1 + v0*t, 2);
     pmb->par_for("hubble_init", kb.s, kb.e, jb.s, jb.e, ib.s, ib.e,
         KOKKOS_LAMBDA_3D {
             Real X[GR_DIM];
@@ -124,7 +124,7 @@ TaskStatus SetHubble(MeshBlockData<Real> *rc, IndexDomain domain, bool coarse)
         GridScalar kel_const = rc->Get("prims.Kel_Constant").data;
         const Real game = pmb->packages.Get("Electrons")->Param<Real>("gamma_e");
         const Real ue0 = pmb->packages.Get("GRMHD")->Param<Real>("ue0");
-        Real tobeke = (gam - 2) * (game - 1)/(game - 2) * ue0/pow(rho0, game) * pow(1 + v0*t, game-2);
+        Real tobeke = (gam - 2) * (game - 1)/(game - 2) * ue0/m::pow(rho0, game) * m::pow(1 + v0*t, game-2);
         // Without cooling, the entropy of electrons should stay the same, analytic solution.
         pmb->par_for("hubble_init", kb.s, kb.e, jb.s, jb.e, ib.s, ib.e,
             KOKKOS_LAMBDA_3D {
