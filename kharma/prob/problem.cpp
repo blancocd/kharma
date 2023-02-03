@@ -41,13 +41,12 @@
 #include "flux.hpp"
 #include "gr_coordinates.hpp"
 #include "grmhd.hpp"
+#include "grmhd_functions.hpp"
 #include "types.hpp"
 
 // Problem initialization headers
-#include "anisotropic_conduction.hpp"
 #include "bondi.hpp"
 #include "driven_turbulence.hpp"
-#include "emhdmodes.hpp"
 #include "explosion.hpp"
 #include "fm_torus.hpp"
 #include "resize_restart.hpp"
@@ -58,14 +57,13 @@
 #include "shock_tube.hpp"
 #include "hubble.hpp"
 #include "noh.hpp"
-
-#include "b_field_tools.hpp"
-
-// Package headers
-#include "grmhd_functions.hpp"
-
-#include "bvals/boundary_conditions.hpp"
-#include "mesh/mesh.hpp"
+// EMHD problem headers
+#include "emhd/anisotropic_conduction.hpp"
+#include "emhd/emhdmodes.hpp"
+#include "emhd/emhdshock.hpp"
+#include "emhd/conducting_atmosphere.hpp"
+#include "emhd/bondi_viscous.hpp"
+// TODO electron problem headers?
 
 using namespace parthenon;
 
@@ -78,7 +76,10 @@ void KHARMA::ProblemGenerator(MeshBlock *pmb, ParameterInput *pin)
     // defined in accompanying headers.
 
     auto prob = pin->GetString("parthenon/job", "problem_id"); // Required parameter
-    if (MPIRank0()) cout << "Initializing problem: " << prob << endl;
+    
+    if (MPIRank0()) {
+        std::cout << "Initializing problem: " << prob << std::endl;
+    }
     TaskStatus status = TaskStatus::fail;
     // GRMHD
     if (prob == "mhdmodes") {
@@ -107,6 +108,12 @@ void KHARMA::ProblemGenerator(MeshBlock *pmb, ParameterInput *pin)
         status = InitializeEMHDModes(rc.get(), pin);
     } else if (prob == "anisotropic_conduction") {
         status = InitializeAnisotropicConduction(rc.get(), pin);
+    } else if (prob == "emhdshock") {
+        status = InitializeEMHDShock(rc.get(), pin);
+    } else if (prob == "conducting_atmosphere") {
+        status = InitializeAtmosphere(rc.get(), pin);
+    } else if (prob == "bondi_viscous") {
+        status = InitializeBondiViscous(rc.get(), pin);
     // Everything
     } else if (prob == "torus") {
         status = InitializeFMTorus(rc.get(), pin);
@@ -121,7 +128,7 @@ void KHARMA::ProblemGenerator(MeshBlock *pmb, ParameterInput *pin)
 
     // If we're not restarting, do any grooming of the initial conditions
     if (prob != "resize_restart") {
-        // Pertub the internal energy a bit to encourage accretion
+        // Perturb the internal energy a bit to encourage accretion
         // Note this defaults to zero & is basically turned on only for torii
         if (pin->GetOrAddReal("perturbation", "u_jitter", 0.0) > 0.0) {
             PerturbU(rc.get(), pin);
@@ -144,6 +151,9 @@ void KHARMA::ProblemGenerator(MeshBlock *pmb, ParameterInput *pin)
     if (prob != "resize_restart") {
         // This is purposefully done even if floors are disabled,
         // as it is required for consistent initialization
+        // Note however we do *not* preserve any inversion flags in this call.
+        // There will be subsequent renormalization and re-inversion that will
+        // initialize those flags.
         Floors::ApplyFloors(rc.get(), IndexDomain::interior);
     }
 

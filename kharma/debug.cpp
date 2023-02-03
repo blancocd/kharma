@@ -41,8 +41,6 @@
 #include "mpi.hpp"
 #include "types.hpp"
 
-using namespace Kokkos;
-
 // TODO have nice ways to print vectors, areas, geometry, etc for debugging new modules
 
 /**
@@ -123,7 +121,7 @@ TaskStatus CheckNaN(MeshData<Real> *md, int dir, IndexDomain domain)
     , zero_reducer);
     pmb0->par_reduce("ctop_nans", block.s, block.e, kb.s, kb.e, jb.s, jb.e, ib.s, ib.e,
         KOKKOS_LAMBDA_MESH_3D_REDUCE_INT {
-            if (isnan(ctop(b, dir-1, k, j, i))) {
+            if (m::isnan(ctop(b, dir-1, k, j, i))) {
                 ++local_result;
             }
         }
@@ -207,10 +205,10 @@ TaskStatus CheckNegative(MeshData<Real> *md, IndexDomain domain)
     nless_u = nless_u_tot.val;
 
     if (MPIRank0() && nless > 0) {
-        cout << "Number of negative conserved rho: " << nless << endl;
+        std::cout << "Number of negative conserved rho: " << nless << std::endl;
     }
     if (MPIRank0() && (nless_rho > 0 || nless_u > 0)) {
-        cout << "Number of negative primitive rho, u: " << nless_rho << "," << nless_u << endl;
+        std::cout << "Number of negative primitive rho, u: " << nless_rho << "," << nless_u << std::endl;
     }
 
     return TaskStatus::complete;
@@ -249,6 +247,8 @@ int CountPFlags(MeshData<Real> *md, IndexDomain domain, int verbose)
     // If necessary, count each flag
     // This is slow, but it can be slow: it's not called for normal operation
     if (verbose > 0 && nflags > 0) {
+        // These are necessary because iterating enums still sucks
+        // Would love a clean single-spot way to do this...
         std::vector<InversionStatus> all_status_vals = {InversionStatus::neg_input,
                                                         InversionStatus::max_iter,
                                                         InversionStatus::bad_ut,
@@ -268,26 +268,23 @@ int CountPFlags(MeshData<Real> *md, IndexDomain domain, int verbose)
         static Reduce<int> n_cells_r;
         n_cells_r.val = (block.e - block.s + 1) * (kb.e - kb.s + 1) * (jb.e - jb.s + 1) * (ib.e - ib.s + 1);
         n_cells_r.StartReduce(0, MPI_SUM);
-        static std::vector<Reduce<int>> reducers;
-        static bool firstc = true;
-        if (firstc) {
+        static std::vector<std::shared_ptr<Reduce<int>>> reducers;
+        if (reducers.size() == 0) {
             for (InversionStatus status : all_status_vals) {
-                reducers.push_back(Reduce<int>());
+                std::shared_ptr<Reduce<int>> reducer = std::make_shared<Reduce<int>>();
+                reducers.push_back(reducer);
             }
-            firstc = false;
         }
-        int i = 0;
-        for (InversionStatus status : all_status_vals) {
-            reducers[i].val = CountPFlag(md, status, domain);
-            reducers[i].StartReduce(0, MPI_SUM);
-            i++;
+        for (int i=0; i < reducers.size(); ++i) {
+            reducers[i]->val = CountPFlag(md, all_status_vals[i], domain);
+            reducers[i]->StartReduce(0, MPI_SUM);
         }
         while (n_cells_r.CheckReduce() == TaskStatus::incomplete);
         const int n_cells = n_cells_r.val;
         std::vector<int> n_status_present;
-        for (Reduce<int> reducer : reducers) {
-            while (reducer.CheckReduce() == TaskStatus::incomplete);
-            n_status_present.push_back(reducer.val);
+        for (std::shared_ptr<Reduce<int>> reducer : reducers) {
+            while (reducer->CheckReduce() == TaskStatus::incomplete);
+            n_status_present.push_back(reducer->val);
         }
 
         if (MPIRank0()) {
@@ -357,26 +354,24 @@ int CountFFlags(MeshData<Real> *md, IndexDomain domain, int verbose)
         static Reduce<int> n_cells_r;
         n_cells_r.val = (block.e - block.s + 1) * (kb.e - kb.s + 1) * (jb.e - jb.s + 1) * (ib.e - ib.s + 1);
         n_cells_r.StartReduce(0, MPI_SUM);
-        static std::vector<Reduce<int>> reducers;
-        static bool firstc = true;
-        if (firstc) {
+        static std::vector<std::shared_ptr<Reduce<int>>> reducers;
+        // TODO there's absolutely reduction-of-view examples.  C'mon
+        if (reducers.size() == 0) {
             for (int flag : all_flag_vals) {
-                reducers.push_back(Reduce<int>());
+                std::shared_ptr<Reduce<int>> reducer = std::make_shared<Reduce<int>>();
+                reducers.push_back(reducer);
             }
-            firstc = false;
         }
-        int i = 0;
-        for (int flag : all_flag_vals) {
-            reducers[i].val = CountFFlag(md, flag, domain);
-            reducers[i].StartReduce(0, MPI_SUM);
-            i++;
+        for (int i=0; i < reducers.size(); ++i) {
+            reducers[i]->val = CountFFlag(md, all_flag_vals[i], domain);
+            reducers[i]->StartReduce(0, MPI_SUM);
         }
         while (n_cells_r.CheckReduce() == TaskStatus::incomplete);
         const int n_cells = n_cells_r.val;
         std::vector<int> n_flag_present;
-        for (Reduce<int> reducer : reducers) {
-            while (reducer.CheckReduce() == TaskStatus::incomplete);
-            n_flag_present.push_back(reducer.val);
+        for (std::shared_ptr<Reduce<int>> reducer : reducers) {
+            while (reducer->CheckReduce() == TaskStatus::incomplete);
+            n_flag_present.push_back(reducer->val);
         }
 
         if (MPIRank0()) {
@@ -385,7 +380,7 @@ int CountFFlags(MeshData<Real> *md, IndexDomain domain, int verbose)
                 for (int i=0; i < all_flag_vals.size(); ++i) {
                     if (n_flag_present[i] > 0) std::cout << all_flag_names[i] << ": " << n_flag_present[i] << std::endl;
                 }
-                cout << std::endl;
+                std::cout << std::endl;
             }
         }
     }

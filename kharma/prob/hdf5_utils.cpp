@@ -46,16 +46,8 @@
 #define DEBUG 0
 #endif
 
-// Use global MPI switch
-#ifndef USE_MPI
-// Or set it intelligently here
-#ifdef MPI_COMM_WORLD
-#define USE_MPI 1
-#else
+// We'll never call this for fast/MPI I/O
 #define USE_MPI 0
-#endif
-
-#endif
 
 // Crash on read/write failures.  Saves checking return values like a pleb
 #ifndef FAIL_HARD
@@ -391,10 +383,11 @@ int hdf5_read_single_val(void *val, const char *name, hsize_t hdf5_type)
 int hdf5_read_array(void *data, const char *name, size_t rank,
                       hsize_t *fdims, hsize_t *fstart, hsize_t *fcount, hsize_t *mdims, hsize_t *mstart, hsize_t hdf5_type)
 {
-  hid_t filespace = H5Screate_simple(4, fdims, NULL);
+  //hid_t filespace = H5Screate_simple(4, fdims, NULL);
+  hid_t filespace = H5Screate_simple(rank, fdims, NULL); // edited by Hyerin
   H5Sselect_hyperslab(filespace, H5S_SELECT_SET, fstart, NULL, fcount,
     NULL);
-  hid_t memspace = H5Screate_simple(4, mdims, NULL);
+  hid_t memspace = H5Screate_simple(rank, mdims, NULL);
   H5Sselect_hyperslab(memspace, H5S_SELECT_SET, mstart, NULL, fcount,
     NULL);
 
@@ -402,7 +395,14 @@ int hdf5_read_array(void *data, const char *name, size_t rank,
   strncpy(path, hdf5_cur_dir, STRLEN);
   strncat(path, name, STRLEN - strlen(path));
 
-  if(DEBUG) fprintf(stderr,"Reading arr %s\n", path);
+  if(DEBUG) {
+    fprintf(stderr,"Reading arr %s:\n", path);
+    fprintf(stderr,"Total file size: %llu %llu %llu %llu\n", fdims[0], fdims[1], fdims[2], fdims[3]);
+    fprintf(stderr,"File start: %llu %llu %llu %llu\n", fstart[0], fstart[1], fstart[2], fstart[3]);
+    fprintf(stderr,"File read size: %llu %llu %llu %llu\n", fcount[0], fcount[1], fcount[2], fcount[3]);
+    fprintf(stderr,"Total memory size: %llu %llu %llu %llu\n", mdims[0], mdims[1], mdims[2], mdims[3]);
+    fprintf(stderr,"Memory start: %llu %llu %llu %llu\n\n", mstart[0], mstart[1], mstart[2], mstart[3]);
+  }
 
   hid_t dset_id = H5Dopen(file_id, path, H5P_DEFAULT);
 

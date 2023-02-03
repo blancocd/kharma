@@ -68,7 +68,9 @@ TaskStatus ApplyFluxes(MeshData<Real> *md, MeshData<Real> *mdudt);
  * declaring UtoP vs FillDerived in GRMHD package.
  */
 TaskStatus PtoU(MeshBlockData<Real> *rc, IndexDomain domain=IndexDomain::interior);
-inline TaskStatus PtoUTask(MeshBlockData<Real> *rc) { return PtoU(rc); }
+// The task version is generally used in the MeshBlock/end portion of a step *after* the boundary sync.
+// Therefore it defaults to the entire domain, incl. ghost zones.
+inline TaskStatus PtoUTask(MeshBlockData<Real> *rc, IndexDomain domain=IndexDomain::entire) { return PtoU(rc, domain); }
 
 // Fluxes a.k.a. "Approximate Riemann Solvers"
 // More complex solvers require speed estimates not calculable completely from
@@ -79,7 +81,7 @@ inline TaskStatus PtoUTask(MeshBlockData<Real> *rc) { return PtoU(rc); }
 KOKKOS_INLINE_FUNCTION Real llf(const Real& fluxL, const Real& fluxR, const Real& cmax, 
                                 const Real& cmin, const Real& Ul, const Real& Ur)
 {
-    Real ctop = max(cmax, cmin);
+    Real ctop = m::max(cmax, cmin);
     return 0.5 * (fluxL + fluxR - ctop * (Ur - Ul));
 }
 // Harten, Lax, van Leer, & Einfeldt flux (early problems but not extensively studied since)
@@ -241,12 +243,12 @@ inline TaskStatus GetFlux(MeshData<Real> *md)
 
                     // Magnetosonic speeds
                     Real cmaxL, cminL;
-                    Flux::vchar(G, Pl, m_p, Dtmp, gam, k, j, i, loc, dir, cmaxL, cminL);
+                    Flux::vchar(G, Pl, m_p, Dtmp, gam, emhd_params, k, j, i, loc, dir, cmaxL, cminL);
 
 #if !FUSE_FLUX_KERNELS
                     // Record speeds
-                    cmax(i) = max(0., cmaxL);
-                    cmin(i) = max(0., -cminL);
+                    cmax(i) = m::max(0., cmaxL);
+                    cmin(i) = m::max(0., -cminL);
                 }
             );
             member.team_barrier();
@@ -269,12 +271,12 @@ inline TaskStatus GetFlux(MeshData<Real> *md)
 
                     // Magnetosonic speeds
                     Real cmaxR, cminR;
-                    Flux::vchar(G, Pr, m_p, Dtmp, gam, k, j, i, loc, dir, cmaxR, cminR);
+                    Flux::vchar(G, Pr, m_p, Dtmp, gam, emhd_params, k, j, i, loc, dir, cmaxR, cminR);
 
 #if FUSE_FLUX_KERNELS
                     // Calculate cmax/min from local variables
-                    cmax(i) = fabs(max(cmaxL,  cmaxR));
-                    cmin(i) = fabs(max(-cminL, -cminR));
+                    cmax(i) = m::abs(m::max(cmaxL,  cmaxR));
+                    cmin(i) = m::abs(m::max(-cminL, -cminR));
 
                     if (use_hlle) {
                         for (int p=0; p < nvar; ++p)
@@ -292,11 +294,11 @@ inline TaskStatus GetFlux(MeshData<Real> *md)
                     }
 #else
                     // Calculate cmax/min based on comparison with cached values
-                    cmax(i) = fabs(max(cmax(i),  cmaxR));
-                    cmin(i) = fabs(max(cmin(i), -cminR));
+                    cmax(i) = m::abs(m::max(cmax(i),  cmaxR));
+                    cmin(i) = m::abs(m::max(cmin(i), -cminR));
 #endif
                     // TODO is it faster to write ctop elsewhere?
-                    ctop(b, dir-1, k, j, i) = max(cmax(i), cmin(i));
+                    ctop(b, dir-1, k, j, i) = m::max(cmax(i), cmin(i));
                 }
             );
             member.team_barrier();

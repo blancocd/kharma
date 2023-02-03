@@ -35,7 +35,6 @@
 
 #include "decs.hpp"
 
-using namespace std;
 using namespace parthenon;
 
 /**

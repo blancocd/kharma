@@ -55,23 +55,36 @@ TaskStatus InitializeBondi(MeshBlockData<Real> *rc, ParameterInput *pin);
  * 
  * Used for initialization and boundary conditions
  */
-TaskStatus SetBondi(MeshBlockData<Real> *rc, IndexDomain domain=IndexDomain::interior, bool coarse=false);
+TaskStatus SetBondi(MeshBlockData<Real> *rc, IndexDomain domain=IndexDomain::interior, bool coarse=false); // (Hyerin) why did you change it to interior?
 
 /**
  * Supporting functions for Bondi flow calculations
  * 
  * Adapted from M. Chandra
+ * Modified by Hyerin Cho and Ramesh Narayan
  */
 KOKKOS_INLINE_FUNCTION Real get_Tfunc(const Real T, const GReal r, const Real C1, const Real C2, const Real n)
 {
-    return pow(1. + (1. + n) * T, 2.) * (1. - 2. / r + pow(C1 / pow(r,2) / pow(T, n), 2.)) - C2;
+    return m::pow(1. + (1. + n) * T, 2.) * (1. - 2. / r + m::pow(C1 / m::pow(r,2) / m::pow(T, n), 2.)) - C2;
 }
-KOKKOS_INLINE_FUNCTION Real get_T(const GReal r, const Real C1, const Real C2, const Real n)
+KOKKOS_INLINE_FUNCTION Real get_T(const GReal r, const Real C1, const Real C2, const Real n, const Real rs)
 {
     Real rtol = 1.e-12;
     Real ftol = 1.e-14;
-    Real Tmin = 0.6 * (sqrt(C2) - 1.) / (n + 1);
-    Real Tmax = pow(C1 * sqrt(2. / pow(r,3)), 1. / n);
+    Real Tinf = (m::sqrt(C2) - 1.) / (n + 1); // temperature at infinity
+    Real Tnear = m::pow(C1 * m::sqrt(2. / m::pow(r,3)), 1. / n); // temperature near the BH
+    Real Tmin, Tmax;
+
+    // There are two branches of solutions (see Michel et al. 1971) and the two branches cross at rs.
+    // These bounds are set to only select the inflowing solution only.
+    if (r<rs) {
+        Tmin = Tinf;
+        Tmax = Tnear;
+    }
+    else {
+        Tmin = m::max(Tnear,Tinf);
+        Tmax = 1.;
+    }
 
     Real f0, f1, fh;
     Real T0, T1, Th;
@@ -81,12 +94,12 @@ KOKKOS_INLINE_FUNCTION Real get_T(const GReal r, const Real C1, const Real C2, c
     f1 = get_Tfunc(T1, r, C1, C2, n);
     if (f0 * f1 > 0) return -1;
 
-    Th = (f1 * T0 - f0 * T1) / (f1 - f0);
+    Th = (T0 + T1) / 2.; // a simple bisection method which is stable and fast
     fh = get_Tfunc(Th, r, C1, C2, n);
     Real epsT = rtol * (Tmin + Tmax);
-    while (fabs(Th - T0) > epsT && fabs(Th - T1) > epsT && fabs(fh) > ftol)
+    while (m::abs(Th - T0) > epsT && m::abs(Th - T1) > epsT && m::abs(fh) > ftol)
     {
-        if (fh * f0 < 0.) {
+        if (fh * f0 > 0.) {
             T0 = Th;
             f0 = fh;
         } else {
@@ -94,7 +107,7 @@ KOKKOS_INLINE_FUNCTION Real get_T(const GReal r, const Real C1, const Real C2, c
             f1 = fh;
         }
 
-        Th = (f1 * T0 - f0 * T1) / (f1 - f0);
+        Th = (T0 + T1) / 2.; 
         fh = get_Tfunc(Th, r, C1, C2, n);
     }
 
@@ -114,11 +127,11 @@ KOKKOS_INLINE_FUNCTION void get_prim_bondi(const GRCoordinates& G, const Coordin
     // Solution constants
     // Ideally these could be cached but preformance isn't an issue here
     Real n = 1. / (gam - 1.);
-    Real uc = sqrt(mdot / (2. * rs));
-    Real Vc = -sqrt(pow(uc, 2) / (1. - 3. * pow(uc, 2)));
-    Real Tc = -n * pow(Vc, 2) / ((n + 1.) * (n * pow(Vc, 2) - 1.));
-    Real C1 = uc * pow(rs, 2) * pow(Tc, n);
-    Real C2 = pow(1. + (1. + n) * Tc, 2) * (1. - 2. * mdot / rs + pow(C1, 2) / (pow(rs, 4) * pow(Tc, 2 * n)));
+    Real uc = m::sqrt(mdot / (2. * rs));
+    Real Vc = -m::sqrt(m::pow(uc, 2) / (1. - 3. * m::pow(uc, 2)));
+    Real Tc = -n * m::pow(Vc, 2) / ((n + 1.) * (n * m::pow(Vc, 2) - 1.));
+    Real C1 = uc * m::pow(rs, 2) * m::pow(Tc, n);
+    Real C2 = m::pow(1. + (1. + n) * Tc, 2) * (1. - 2. * mdot / rs + m::pow(C1, 2) / (m::pow(rs, 4) * m::pow(Tc, 2 * n)));
 
     GReal Xnative[GR_DIM], Xembed[GR_DIM];
     G.coord(k, j, i, Loci::center, Xnative);
@@ -128,9 +141,9 @@ KOKKOS_INLINE_FUNCTION void get_prim_bondi(const GRCoordinates& G, const Coordin
     // be a little cautious about initializing the Ergosphere zones
     if (ks.a > 0.1 && r < 2) return;
 
-    Real T = get_T(r, C1, C2, n);
-    Real ur = -C1 / (pow(T, n) * pow(r, 2));
-    Real rho = pow(T, n);
+    Real T = get_T(r, C1, C2, n, rs);
+    Real ur = -C1 / (m::pow(T, n) * m::pow(r, 2));
+    Real rho = m::pow(T, n);
     Real u = rho * T * n;
 
     // Set u^t to make u^r a 4-vector
@@ -149,9 +162,9 @@ KOKKOS_INLINE_FUNCTION void get_prim_bondi(const GRCoordinates& G, const Coordin
     G.gcon(Loci::center, j, i, gcon);
     fourvel_to_prim(gcon, ucon_mks, u_prim);
 
-    P(m_p.RHO, k, j, i) = rho;
-    P(m_p.UU, k, j, i) = u;
-    P(m_p.U1, k, j, i) = u_prim[0];
-    P(m_p.U2, k, j, i) = u_prim[1];
-    P(m_p.U3, k, j, i) = u_prim[2];
+    if (!isnan(rho)) P(m_p.RHO, k, j, i) = rho;
+    if (!isnan(u)) P(m_p.UU, k, j, i) = u;
+    if (!isnan(u_prim[0])) P(m_p.U1, k, j, i) = u_prim[0];
+    if (!isnan(u_prim[1])) P(m_p.U2, k, j, i) = u_prim[1];
+    if (!isnan(u_prim[2])) P(m_p.U3, k, j, i) = u_prim[2];
 }

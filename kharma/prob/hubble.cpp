@@ -87,6 +87,8 @@ TaskStatus SetHubble(MeshBlockData<Real> *rc, IndexDomain domain, bool coarse)
     const Real gam = pmb->packages.Get("GRMHD")->Param<Real>("gamma");
     const Real rho0 = pmb->packages.Get("GRMHD")->Param<Real>("rho0");
     const Real v0 = pmb->packages.Get("GRMHD")->Param<Real>("v0");
+    const bool cooling = pmb->packages.Get("GRMHD")->Param<bool>("cooling");
+    const bool context_boundaries = pmb->packages.Get("GRMHD")->Param<bool>("context_boundaries");
     const Real ug0 = pmb->packages.Get("GRMHD")->Param<Real>("ug0");
     // first time this is called in boundary conditions inside the time stepping cycle is when counter == 0
     int counter = pmb->packages.Get("GRMHD")->Param<int>("counter");

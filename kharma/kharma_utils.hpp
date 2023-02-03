@@ -1,5 +1,35 @@
-/*
- * Everything that doesn't fit somewhere else.  General C/C++ convenience functions.
+/* 
+ *  File: kharma_utils.hpp
+ *  
+ *  BSD 3-Clause License
+ *  
+ *  Copyright (c) 2020, AFD Group at UIUC
+ *  All rights reserved.
+ *  
+ *  Redistribution and use in source and binary forms, with or without
+ *  modification, are permitted provided that the following conditions are met:
+ *  
+ *  1. Redistributions of source code must retain the above copyright notice, this
+ *     list of conditions and the following disclaimer.
+ *  
+ *  2. Redistributions in binary form must reproduce the above copyright notice,
+ *     this list of conditions and the following disclaimer in the documentation
+ *     and/or other materials provided with the distribution.
+ *  
+ *  3. Neither the name of the copyright holder nor the names of its
+ *     contributors may be used to endorse or promote products derived from
+ *     this software without specific prior written permission.
+ *  
+ *  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ *  AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ *  IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ *  DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+ *  FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ *  DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ *  SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+ *  CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+ *  OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ *  OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 #pragma once
 
@@ -9,9 +39,9 @@
 #include <string>
 #include <stdexcept>
 
-// Allow max/min below to be defined directly by CUDA,
-// but otherwise resolve to std::max and std::min
-using namespace std;
+/*
+ * A file for everything that doesn't fit somewhere else.  General C/C++ convenience functions.
+ */
 
 /**
  * This takes a number n and clips it to lie on the real line between 'lower' and 'upper'
@@ -27,11 +57,11 @@ KOKKOS_INLINE_FUNCTION T clip(const T& n, const T& lower, const T& upper)
 {
 #if TRACE
   // This isn't so useful without context
-  //if (isnan(n)) printf("Clipping a NaN value!\n");
+  //if (m::isnan(n)) printf("Clipping a NaN value!\n");
   //if (n > upper) printf("Clip %g to %g\n", n, upper);
   //if (n < lower) printf("Clip %g to %g\n", n, lower);
 #endif
-    return min(max(lower, n), upper);
+    return m::min(m::max(lower, n), upper);
 }
 // Version which "bounces" any excess over the bounds, useful for the polar coordinate
 template <typename T>
@@ -43,7 +73,13 @@ KOKKOS_INLINE_FUNCTION T bounce(const T& n, const T& lower, const T& upper)
 template <typename T>
 KOKKOS_INLINE_FUNCTION T excise(const T& n, const T& center, const T& range)
 {
-    return (abs(n - center) > range) ? n : ( (n > center) ? center + range : center - range );
+    return (m::abs(n - center) > range) ? n : ( (n > center) ? center + range : center - range );
+}
+
+template <typename T>
+KOKKOS_INLINE_FUNCTION T close_to(const T& x, const T& y, const Real& rel_tol=1e-8, const Real& abs_tol=1e-8)
+{
+    return ((abs(x - y) / y) < rel_tol) || (abs(x) < abs_tol && abs(y) < abs_tol);
 }
 
 // Quickly zero n elements of an array

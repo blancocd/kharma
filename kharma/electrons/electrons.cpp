@@ -128,23 +128,24 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin, Packages_t pack
 
     // Parse various mass and density units to set the different cooling rates
     // These could maybe tie in with Parthenon::Units when we add radiation
+    // TODO pretty soon this can be a GetVector<std::string>!!!
     std::vector<Real> masses = parse_list(pin->GetOrAddString("units", "MBH", "1.0"));
     if (masses != std::vector<Real>{1.0})
     {
         std::vector<std::vector<Real>> munits;
         for (int i=1; i <= masses.size(); ++i) {
-            munits.push_back(parse_list(pin->GetString("units", "M_unit_"+to_string(i))));
+            munits.push_back(parse_list(pin->GetString("units", "M_unit_" + std::to_string(i))));
         }
 
         if (MPIRank0() && verbose > 0) {
-            cout << "Using unit sets:" << endl;
+            std::cout << "Using unit sets:" << std::endl;
             for (int i=0; i < masses.size(); ++i) {
-                cout << endl << masses[i] << ":";
+                std::cout << std::endl << masses[i] << ":";
                 for (auto munit : munits[i]) {
-                    cout << " " << munit;
+                    std::cout << " " << munit;
                 }
             }
-            cout << endl;
+            std::cout << std::endl;
         }
         // This is a vector of Reals
         params.Add("masses", masses);
@@ -239,7 +240,14 @@ std::shared_ptr<StateDescriptor> Initialize(ParameterInput *pin, Packages_t pack
 
 TaskStatus InitElectrons(MeshBlockData<Real> *rc, ParameterInput *pin)
 {
+    Flag("Initializing electron/fluid entropy values");
     auto pmb = rc->GetBlockPointer();
+
+    // Don't initialize entropies when running hubble problem
+    // TODO option for this in problem params
+    if (pmb->packages.Get("GRMHD")->Param<std::string>("problem") == "hubble") {
+        return TaskStatus::complete;
+    }
 
     MetadataFlag isElectrons = pmb->packages.Get("Electrons")->Param<MetadataFlag>("ElectronsFlag");
     MetadataFlag isPrimitive = pmb->packages.Get("GRMHD")->Param<MetadataFlag>("PrimitiveFlag");
@@ -263,15 +271,17 @@ TaskStatus InitElectrons(MeshBlockData<Real> *rc, ParameterInput *pin)
         KOKKOS_LAMBDA_VARS {
             if (p == ktot_index) { // Initialize it even when using Hubble, it will be "erased" immediately after anyway in ApplyElectronHeating
                 // Initialize total entropy by definition,
-                e_P(p, k, j, i) = (gam - 1.) * u(k, j, i) * pow(rho(k, j, i), -gam);
+                e_P(p, k, j, i) = (gam - 1.) * u(k, j, i) * m::pow(rho(k, j, i), -gam);
             } else if (pmb->packages.Get("GRMHD")->Param<string>("problem") != "hubble") {
                 // and e- entropy by given constant initial fraction
-                e_P(p, k, j, i) = (game - 1.) * fel0 * u(k, j, i) * pow(rho(k, j, i), -game);
+                e_P(p, k, j, i) = (game - 1.) * fel0 * u(k, j, i) * m::pow(rho(k, j, i), -game);
             }
         }
     );
 
-    // iharm3d syncs bounds here
+    // iharm3d syncs bounds here?
+
+    Flag("Initialized electron/fluid entropy values");
     return TaskStatus::complete;
 }
 
@@ -344,20 +354,20 @@ TaskStatus ApplyElectronHeating(MeshBlockData<Real> *rc_old, MeshBlockData<Real>
             Real bsq = dot(Dtmp.bcon, Dtmp.bcov);
 
             // Calculate the new total entropy in this cell considering heating
-            const Real k_energy_conserving = (gam-1.) * P_new(m_p.UU, k, j, i) / pow(P_new(m_p.RHO, k, j, i), gam);
+            const Real k_energy_conserving = (gam-1.) * P_new(m_p.UU, k, j, i) / m::pow(P_new(m_p.RHO, k, j, i), gam);
 
             // Dissipation is the real entropy k_energy_conserving minus any advected entropy from the previous (sub-)step P_new(KTOT)
-            // Due to floors we can end up with diss==0 or even *slightly* <0, so we require it to be positive here
-            // Under the flag "suppress_highb_heat", we set all dissipation to zero at sigma > 1.
-            Real diss = (suppress_highb_heat && (bsq / P(m_p.RHO, k, j, i) > 1.)) ? 0.0 :
-                                (game-1.) / (gam-1.) * pow(P(m_p.RHO, k, j, i), gam - game) * (k_energy_conserving - P_new(m_p.KTOT, k, j, i));
-            //this is eq27                  ratio of heating: Qi/Qe                                   //advected entropy from prev step
+            Real diss_tmp = (game-1.) / (gam-1.) * m::pow(P(m_p.RHO, k, j, i), gam - game) * (k_energy_conserving - P_new(m_p.KTOT, k, j, i));
+            //this is eq27                  ratio of heating: Qi/Qe                           advected entropy from prev step
             // ^ denotes the solution corresponding to entropy conservation
-            
+
+            // Under the flag "suppress_highb_heat", we set all dissipation to zero at sigma > 1.
+            diss_tmp = (suppress_highb_heat && (bsq / P(m_p.RHO, k, j, i) > 1.)) ? 0.0 : diss_tmp;
+
             // Default is True diss_sign == Enforce nonnegative
-            if (pmb->packages.Get("Electrons")->Param<bool>("diss_sign")) {
-                diss = max(diss, 0.0);
-            }
+            // Dissipation is the real entropy kNew minus any advected entropy from the previous (sub-)step P_new(KTOT)
+            // Due to floors we can end up with diss==0 or even *slightly* <0, so we require it to be positive here
+            const Real diss = pmb->packages.Get("Electrons")->Param<bool>("diss_sign") ? m::max(diss_tmp, 0.0) : diss_tmp;
 
             // Reset the entropy to measure next (sub-)step's dissipation
             P_new(m_p.KTOT, k, j, i) = k_energy_conserving;
@@ -365,16 +375,16 @@ TaskStatus ApplyElectronHeating(MeshBlockData<Real> *rc_old, MeshBlockData<Real>
             // We'll be applying floors inline as we heat electrons, so
             // we cache the floors as entropy limits so they'll be cheaper to apply.
             // Note tp_te_min -> kel_max & vice versa
-            const Real kel_max = P(m_p.KTOT, k, j, i) * pow(P(m_p.RHO, k, j, i), gam - game) /
+            const Real kel_max = P(m_p.KTOT, k, j, i) * m::pow(P(m_p.RHO, k, j, i), gam - game) /
                                     (tptemin * (gam - 1.) / (gamp-1.) + (gam-1.) / (game-1.)); //0.001
-            const Real kel_min = P(m_p.KTOT, k, j, i) * pow(P(m_p.RHO, k, j, i), gam - game) /
+            const Real kel_min = P(m_p.KTOT, k, j, i) * m::pow(P(m_p.RHO, k, j, i), gam - game) /
                                     (tptemax * (gam - 1.) / (gamp-1.) + (gam-1.) / (game-1.)); //1000
             // Note this differs a little from Ressler '15, who ensure u_e/u_g > 0.01 rather than use temperatures
 
             // The ion temperature is useful for a few models, cache it too.
             // The minimum values on Tpr & Tel here ensure that for un-initialized zones,
             // Tpr/Tel == Tel/Tpr == 1 != NaN.  This condition should not be hit after step 1
-            const Real Tpr = max((gamp - 1.) * P(m_p.UU, k, j, i) / P(m_p.RHO, k, j, i), SMALL);
+            const Real Tpr = m::max((gamp - 1.) * P(m_p.UU, k, j, i) / P(m_p.RHO, k, j, i), SMALL);
 
             // Heat different electron passives based on different dissipation fraction models
             // Expressions here closely adapted (read: stolen) from implementation in iharm3d
@@ -392,11 +402,11 @@ TaskStatus ApplyElectronHeating(MeshBlockData<Real> *rc_old, MeshBlockData<Real>
                 }
             }
             if (m_p.K_HOWES >= 0) {
-                const Real Tel = max(P(m_p.K_HOWES, k, j, i) * pow(P(m_p.RHO, k, j, i), game-1), SMALL);
+                const Real Tel = m::max(P(m_p.K_HOWES, k, j, i) * m::pow(P(m_p.RHO, k, j, i), game-1), SMALL);
 
                 const Real Trat = Tpr / Tel;
                 const Real pres = P(m_p.RHO, k, j, i) * Tpr; // Proton pressure
-                const Real beta = min(pres / bsq * 2, 1.e20);// If somebody enables electrons in a GRHD sim
+                const Real beta = m::min(pres / bsq * 2, 1.e20);// If somebody enables electrons in a GRHD sim
 
                 const Real logTrat = log10(Trat);
                 const Real mbeta = 2. - 0.2*logTrat;
@@ -404,20 +414,20 @@ TaskStatus ApplyElectronHeating(MeshBlockData<Real> *rc_old, MeshBlockData<Real>
                 const Real c2 = (Trat <= 1.) ? 1.6/Trat : 1.2/Trat;
                 const Real c3 = (Trat <= 1.) ? 18. + 5.*logTrat : 18.;
 
-                const Real beta_pow = pow(beta, mbeta);
-                const Real qrat = 0.92 * (c2*c2 + beta_pow)/(c3*c3 + beta_pow) * exp(-1./beta) * sqrt(MP/ME * Trat);
+                const Real beta_pow = m::pow(beta, mbeta);
+                const Real qrat = 0.92 * (c2*c2 + beta_pow)/(c3*c3 + beta_pow) * exp(-1./beta) * m::sqrt(MP/ME * Trat);
                 const Real fel = 1./(1. + qrat);
                 P_new(m_p.K_HOWES, k, j, i) = clip(P_new(m_p.K_HOWES, k, j, i) + fel * diss, kel_min, kel_max);
             }
             if (m_p.K_KAWAZURA >= 0) {
                 // Equation (2) in http://www.pnas.org/lookup/doi/10.1073/pnas.1812491116
-                const Real Tel = max(P(m_p.K_KAWAZURA, k, j, i) * pow(P(m_p.RHO, k, j, i), game-1), SMALL);
+                const Real Tel = m::max(P(m_p.K_KAWAZURA, k, j, i) * m::pow(P(m_p.RHO, k, j, i), game-1), SMALL);
 
                 const Real Trat = Tpr / Tel;
                 const Real pres = P(m_p.RHO, k, j, i) * Tpr; // Proton pressure
-                const Real beta = min(pres / bsq * 2, 1.e20);// If somebody enables electrons in a GRHD sim
+                const Real beta = m::min(pres / bsq * 2, 1.e20);// If somebody enables electrons in a GRHD sim
 
-                const Real QiQe = 35. / (1. + pow(beta/15., -1.4) * exp(-0.1 / Trat));
+                const Real QiQe = 35. / (1. + m::pow(beta/15., -1.4) * exp(-0.1 / Trat));
                 const Real fel = 1./(1. + QiQe);
                 P_new(m_p.K_KAWAZURA, k, j, i) = clip(P_new(m_p.K_KAWAZURA, k, j, i) + fel * diss, kel_min, kel_max);
             }
@@ -425,7 +435,7 @@ TaskStatus ApplyElectronHeating(MeshBlockData<Real> *rc_old, MeshBlockData<Real>
             if (m_p.K_WERNER >= 0) {
                 // Equation (3) in http://academic.oup.com/mnras/article/473/4/4840/4265350
                 const Real sigma = bsq / P(m_p.RHO, k, j, i);
-                const Real fel = 0.25 * (1 + sqrt((sigma/5.) / (2 + (sigma/5.))));
+                const Real fel = 0.25 * (1 + m::sqrt((sigma/5.) / (2 + (sigma/5.))));
                 P_new(m_p.K_WERNER, k, j, i) = clip(P_new(m_p.K_WERNER, k, j, i) + fel * diss, kel_min, kel_max);
             }
             if (m_p.K_ROWAN >= 0) {
@@ -435,15 +445,15 @@ TaskStatus ApplyElectronHeating(MeshBlockData<Real> *rc_old, MeshBlockData<Real>
                 const Real beta = pres / bsq * 2;
                 const Real sigma = bsq / (P(m_p.RHO, k, j, i) + P(m_p.UU, k, j, i) + pg);
                 const Real betamax = 0.25 / sigma;
-                const Real fel = 0.5 * exp(-pow(1 - beta/betamax, 3.3) / (1 + 1.2*pow(sigma, 0.7)));
+                const Real fel = 0.5 * exp(-m::pow(1 - beta/betamax, 3.3) / (1 + 1.2*m::pow(sigma, 0.7)));
                 P_new(m_p.K_ROWAN, k, j, i) = clip(P_new(m_p.K_ROWAN, k, j, i) + fel * diss, kel_min, kel_max);
             }
             if (m_p.K_SHARMA >= 0) {
                 // Equation for \delta on  pg. 719 (Section 4) in https://iopscience.iop.org/article/10.1086/520800
-                const Real Tel = max(P(m_p.K_SHARMA, k, j, i) * pow(P(m_p.RHO, k, j, i), game-1), SMALL);
+                const Real Tel = m::max(P(m_p.K_SHARMA, k, j, i) * m::pow(P(m_p.RHO, k, j, i), game-1), SMALL);
 
                 const Real Trat_inv = Tel / Tpr; // Inverse of the temperature ratio in KAWAZURA
-                const Real QeQi = 0.33 * sqrt(Trat_inv);
+                const Real QeQi = 0.33 * m::sqrt(Trat_inv);
                 const Real fel = 1./(1.+1./QeQi);
                 P_new(m_p.K_SHARMA, k, j, i) = clip(P_new(m_p.K_SHARMA, k, j, i) + fel * diss, kel_min, kel_max);
             }
@@ -466,9 +476,11 @@ TaskStatus ApplyElectronHeating(MeshBlockData<Real> *rc_old, MeshBlockData<Real>
         const Real t = pmb->packages.Get("Globals")->Param<Real>("time");
         Real counter = pmb->packages.Get("GRMHD")->Param<Real>("counter");
         const Real dt_kick=  pmb->packages.Get("GRMHD")->Param<Real>("dt_kick");
-        if (generate_grf && counter < t) {  counter+=dt_kick;
+        if (generate_grf && counter < t) {
+            counter += dt_kick;
             pmb->packages.Get("GRMHD")->UpdateParam<Real>("counter", counter);
             printf("Kick applied at time %.32f\n", t);
+
             const Real lx1=  pmb->packages.Get("GRMHD")->Param<Real>("lx1");
             const Real lx2=  pmb->packages.Get("GRMHD")->Param<Real>("lx2");
             const Real edot= pmb->packages.Get("GRMHD")->Param<Real>("drive_edot");
@@ -555,7 +567,7 @@ TaskStatus ApplyElectronHeating(MeshBlockData<Real> *rc_old, MeshBlockData<Real>
             printf("%.32f\n", A); printf("%.32f\n", Bhalf); printf("%.32f\n", norm_const);
             printf("%.32f\n", (finl_e-init_e)/dt_kick);
             free(dv0); free(dv1);
-        } 
+        }
         // This could be only the GRMHD vars, for this problem, but speed isn't really an issue
         Flux::PtoU(rc);
     }
@@ -563,7 +575,7 @@ TaskStatus ApplyElectronHeating(MeshBlockData<Real> *rc_old, MeshBlockData<Real>
     return TaskStatus::complete;
 }
 
-// Only if prob is rest_conserve or hubble
+// Only called for Hubble flow problem
 TaskStatus ApplyHubbleHeating(MeshBlockData<Real> * mbase) {
     auto pmb0 = mbase->GetBlockPointer();
     const string prob = pmb0->packages.Get("GRMHD")->Param<string>("problem");

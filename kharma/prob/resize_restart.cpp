@@ -37,154 +37,32 @@
 #include "b_flux_ct.hpp"
 #include "debug.hpp"
 #include "hdf5_utils.h"
+#include "kharma_utils.hpp"
 #include "mpi.hpp"
-#include "resize.hpp"
+#include "interpolation.hpp"
 #include "types.hpp"
 
 #include <sys/stat.h>
 #include <ctype.h>
 
-using namespace Kokkos;
+// TODO: The iharm3d restart format fails to record several things we must guess:
+// 1. Sometimes, even precise domain boundaries in native coordinates
+// 2. Which coordinate system was used
+// 3. Any coordinate system parameters
+// Better to either:
+// a. read KHARMA restart files so we can re-grid
+// b. use the IL dump format, but in double precision (or even in single w/cleanup)
+// Either would be very useful independently
 
-// TODO
-// Record & read:
-// 1. startx/stopx/dx
-// 2. coordinate name FMKS/MKS/etc
-// 3. all coordinate params in play
-// 4. Electron MODEL bitflag param
-// 5. nprim for sanity check?
-// 6. Indication of EMHD vs MHD
-
-// TODO this code is very specific to spherical systems/boundares or entirely periodic boxes.
-// No other boundaries/geometries are really supported.
+// This exists to simplify some initializer lists below
+// This indicates I know that moving from signed->unsigned is dangerous,
+// and sign off that these results are positive (they are)
+hsize_t static_max(int i, int n) { return static_cast<hsize_t>(m::max(i, n)); }
+hsize_t static_min(int i, int n) { return static_cast<hsize_t>(m::min(i, n)); }
 
 void ReadIharmRestartHeader(std::string fname, std::unique_ptr<ParameterInput>& pin)
 {
     // Read the restart file and set parameters that need to be specified at early loading
-    hdf5_open(fname.c_str());
-
-    // Read everything from root
-    hdf5_set_directory("/");
-
-    // Get the grid size
-    int n1file, n2file, n3file;
-    hdf5_read_single_val(&n1file, "n1", H5T_STD_I32LE);
-    hdf5_read_single_val(&n2file, "n2", H5T_STD_I32LE);
-    hdf5_read_single_val(&n3file, "n3", H5T_STD_I32LE);
-    if (pin->GetOrAddBoolean("resize_restart", "use_restart_size", false)) {
-        // This locks the mesh size to be zone-for-zone the same as the iharm3d dump file
-        pin->SetInteger("parthenon/mesh", "nx1", n1file);
-        pin->SetInteger("parthenon/mesh", "nx2", n2file);
-        pin->SetInteger("parthenon/mesh", "nx3", n3file);
-        pin->SetInteger("parthenon/meshblock", "nx1", n1file);
-        pin->SetInteger("parthenon/meshblock", "nx2", n2file);
-        pin->SetInteger("parthenon/meshblock", "nx3", n3file);
-    }
-    // Record the old values in any case
-    pin->SetInteger("parthenon/mesh", "restart_nx1", n1file);
-    pin->SetInteger("parthenon/mesh", "restart_nx2", n2file);
-    pin->SetInteger("parthenon/mesh", "restart_nx3", n3file);
-
-    double gam, cour, t;
-    hdf5_read_single_val(&gam, "gam", H5T_IEEE_F64LE);
-    hdf5_read_single_val(&cour, "cour", H5T_IEEE_F64LE);
-    hdf5_read_single_val(&t, "t", H5T_IEEE_F64LE);
-
-    pin->SetReal("GRMHD", "gamma", gam);
-    pin->SetReal("parthenon/time", "start_time", t);
-    // TODO NSTEP, next tdump/tlog, etc?
-
-    if (hdf5_exists("a")) {
-        double a, hslope, Rout;
-        hdf5_read_single_val(&a, "a", H5T_IEEE_F64LE);
-        hdf5_read_single_val(&hslope, "hslope", H5T_IEEE_F64LE);
-        hdf5_read_single_val(&Rout, "Rout", H5T_IEEE_F64LE);
-        pin->SetReal("coordinates", "a", a);
-        pin->SetReal("coordinates", "hslope", hslope);
-        pin->SetReal("coordinates", "r_out", Rout);
-
-        // Sadly restarts did not record MKS vs FMKS
-        // Guess if not specified in parameter file
-        pin->SetString("coordinates", "base", "spherical_ks");
-        if (!pin->DoesParameterExist("coordinates", "transform")) {
-            pin->SetString("coordinates", "transform", "funky");
-        }
-
-        pin->SetReal("parthenon/mesh", "x2min", 0.0);
-        pin->SetReal("parthenon/mesh", "x2max", 1.0);
-        pin->SetReal("parthenon/mesh", "x3min", 0.0);
-        pin->SetReal("parthenon/mesh", "x3max", 2*M_PI);
-
-        // All MKS sims had the usual bcs
-        pin->SetString("parthenon/mesh", "ix1_bc", "outflow");
-        pin->SetString("parthenon/mesh", "ox1_bc", "outflow");
-        pin->SetString("parthenon/mesh", "ix2_bc", "reflecting");
-        pin->SetString("parthenon/mesh", "ox2_bc", "reflecting");
-        pin->SetString("parthenon/mesh", "ix3_bc", "periodic");
-        pin->SetString("parthenon/mesh", "ox3_bc", "periodic");
-    } else if (hdf5_exists("x1Min")) {
-        double x1min, x2min, x3min;
-        double x1max, x2max, x3max;
-        hdf5_read_single_val(&x1min, "x1Min", H5T_IEEE_F64LE);
-        hdf5_read_single_val(&x1max, "x1Max", H5T_IEEE_F64LE);
-        hdf5_read_single_val(&x2min, "x2Min", H5T_IEEE_F64LE);
-        hdf5_read_single_val(&x2max, "x2Max", H5T_IEEE_F64LE);
-        hdf5_read_single_val(&x3min, "x3Min", H5T_IEEE_F64LE);
-        hdf5_read_single_val(&x3max, "x3Max", H5T_IEEE_F64LE);
-        pin->SetReal("parthenon/mesh", "x1min", x1min);
-        pin->SetReal("parthenon/mesh", "x1max", x1max);
-        pin->SetReal("parthenon/mesh", "x2min", x2min);
-        pin->SetReal("parthenon/mesh", "x2max", x2max);
-        pin->SetReal("parthenon/mesh", "x3min", x3min);
-        pin->SetReal("parthenon/mesh", "x3max", x3max);
-
-        // Sims like this were of course cartesian
-        pin->SetString("coordinates", "base", "cartesian_minkowski");
-        pin->SetString("coordinates", "transform", "null");
-
-        // All cartesian sims were periodic
-        pin->SetString("parthenon/mesh", "ix1_bc", "periodic");
-        pin->SetString("parthenon/mesh", "ox1_bc", "periodic");
-        pin->SetString("parthenon/mesh", "ix2_bc", "periodic");
-        pin->SetString("parthenon/mesh", "ox2_bc", "periodic");
-        pin->SetString("parthenon/mesh", "ix3_bc", "periodic");
-        pin->SetString("parthenon/mesh", "ox3_bc", "periodic");
-    } else {
-        throw std::runtime_error("Unknown restart file format!");
-    }
-
-    // End HDF5 reads
-    hdf5_close();
-}
-
-TaskStatus ReadIharmRestart(MeshBlockData<Real> *rc, ParameterInput *pin)
-{
-    Flag(rc, "Restarting from iharm3d checkpoint file");
-
-    auto pmb = rc->GetBlockPointer();
-    GridScalar rho = rc->Get("prims.rho").data;
-    GridScalar u = rc->Get("prims.u").data;
-    GridVector uvec = rc->Get("prims.uvec").data;
-    GridVector B_P = rc->Get("prims.B").data;
-
-    auto& G = pmb->coords;
-
-    auto fname = pin->GetString("resize_restart", "fname"); // Require this, don't guess
-    bool use_tf = pin->GetOrAddBoolean("resize_restart", "use_tf", false);
-    bool use_dt = pin->GetOrAddBoolean("resize_restart", "use_dt", true);
-    const bool is_spherical = pin->GetBoolean("coordinates", "spherical");
-
-    // Size of the file mesh
-    hsize_t n1tot = pin->GetInteger("parthenon/mesh", "restart_nx1");
-    hsize_t n2tot = pin->GetInteger("parthenon/mesh", "restart_nx2");
-    hsize_t n3tot = pin->GetInteger("parthenon/mesh", "restart_nx3");
-
-    // Size/domain of the MeshBlock we're reading to
-    IndexDomain domain = IndexDomain::interior;
-    int is = pmb->cellbounds.is(domain), ie = pmb->cellbounds.ie(domain);
-    int js = pmb->cellbounds.js(domain), je = pmb->cellbounds.je(domain);
-    int ks = pmb->cellbounds.ks(domain), ke = pmb->cellbounds.ke(domain);
-
     hdf5_open(fname.c_str());
 
     // Read everything from root
@@ -194,94 +72,446 @@ TaskStatus ReadIharmRestart(MeshBlockData<Real> *rc, ParameterInput *pin)
     char version[20];
     hdf5_read_single_val(version, "version", string_type);
     if (MPIRank0()) {
-        cout << "Restarting from " << fname << ", file version " << version << endl << endl;
+        std::cout << "Initialized from " << fname << ", file version " << version << std::endl << std::endl;
     }
 
-    // Get tf/dt here and not when reading the header, since whether we use them
-    // depends on another parameter, "use_tf" & "use_dt" which need to be initialized
-    double tf, dt;
-    hdf5_read_single_val(&tf, "tf", H5T_IEEE_F64LE);
-    hdf5_read_single_val(&dt, "dt", H5T_IEEE_F64LE);
+    // Read what we need from the file, regardless of where we're putting it
+    int n1file, n2file, n3file;
+    hdf5_read_single_val(&n1file, "n1", H5T_STD_I32LE);
+    hdf5_read_single_val(&n2file, "n2", H5T_STD_I32LE);
+    hdf5_read_single_val(&n3file, "n3", H5T_STD_I32LE);
 
-    // TODO do this better by recording/counting flags in MODEL
-    hsize_t nfprim;
-    if(hdf5_exists("game")) {
-        nfprim = 10;
+    double x1min, x2min, x3min;
+    double x1max, x2max, x3max;
+    bool use_native_bounds = false;
+    // Spherical for guessing
+    double Rin, Rout;
+    if (hdf5_exists("x1Min")) {
+        // If available, read domain boundaries exactly.  This is mostly
+        // for re-gridded KHARMA dumps.
+        hdf5_read_single_val(&x1min, "x1Min", H5T_IEEE_F64LE);
+        hdf5_read_single_val(&x1max, "x1Max", H5T_IEEE_F64LE);
+        hdf5_read_single_val(&x2min, "x2Min", H5T_IEEE_F64LE);
+        hdf5_read_single_val(&x2max, "x2Max", H5T_IEEE_F64LE);
+        hdf5_read_single_val(&x3min, "x3Min", H5T_IEEE_F64LE);
+        hdf5_read_single_val(&x3max, "x3Max", H5T_IEEE_F64LE);
+        use_native_bounds = true;
+    } else if (hdf5_exists("a")) {
+        // Only read these if the better versions aren't available
+        hdf5_read_single_val(&Rin, "Rin", H5T_IEEE_F64LE);
+        hdf5_read_single_val(&Rout, "Rout", H5T_IEEE_F64LE);
     } else {
-        nfprim = 8;
+        throw std::runtime_error("Unknown restart file type!");
     }
 
-    // Declare known sizes for inputting/outputting primitives
-    // We'll only ever read the full block, so this is the size we want
-    static hsize_t fdims[] = {nfprim, n3tot, n2tot, n1tot};
-    hsize_t fstart[] = {0, 0, 0, 0};
+    // Anything always necessary for spherical coordinates
+    double a, hslope;
+    bool file_in_spherical = false;
+    if (hdf5_exists("a")) {
+        hdf5_read_single_val(&a, "a", H5T_IEEE_F64LE);
+        hdf5_read_single_val(&hslope, "hslope", H5T_IEEE_F64LE);
+        file_in_spherical = true;
+    }
 
-    // TODO don't repeat this read for every block!
-    // Likely requires read once in e.g. InitUserMeshData
-    // -> pass in (pointer) -> delete[] in PostInit or something
-    Real *ptmp = new double[nfprim*n3tot*n2tot*n1tot]; // These will include B & thus be double or upconverted to it
-    hdf5_read_array(ptmp, "p", 4, fdims, fstart, fdims, fdims, fstart, H5T_IEEE_F64LE);
+    // Anything else
+    double gam, t, dt, tf;
+    hdf5_read_single_val(&gam, "gam", H5T_IEEE_F64LE);
+    hdf5_read_single_val(&t, "t", H5T_IEEE_F64LE);
+    hdf5_read_single_val(&dt, "dt", H5T_IEEE_F64LE);
+    hdf5_read_single_val(&tf, "tf", H5T_IEEE_F64LE);
+
+    // Set the number of primitive vars
+    // TODO do this better by recording/counting flags in MODEL
+    if(hdf5_exists("game")) {
+        pin->SetInteger("resize_restart", "nfprim", 10);
+    } else {
+        pin->SetInteger("resize_restart", "nfprim", 8);
+    }
 
     // End HDF5 reads
     hdf5_close();
 
+    // Record the parameters of the file grid
+    // Note the iharm3d-style naming as mnemonic
+    pin->SetInteger("resize_restart", "n1tot", n1file);
+    pin->SetInteger("resize_restart", "n2tot", n2file);
+    pin->SetInteger("resize_restart", "n3tot", n3file);
+    if (use_native_bounds) {
+        // If available, set the domain boundaries exactly
+        pin->SetReal("resize_restart", "startx1", x1min);
+        pin->SetReal("resize_restart", "stopx1", x1max);
+        pin->SetReal("resize_restart", "startx2", x2min);
+        pin->SetReal("resize_restart", "stopx2", x2max);
+        pin->SetReal("resize_restart", "startx3", x3min);
+        pin->SetReal("resize_restart", "stopx3", x3max);
+    } else {
+        // Otherwise, guess them
+        pin->SetReal("resize_restart", "startx1", m::log(Rin));
+        pin->SetReal("resize_restart", "stopx1", m::log(Rout));
+        pin->SetReal("resize_restart", "startx2", 0.0);
+        pin->SetReal("resize_restart", "stopx2", 1.0);
+        pin->SetReal("resize_restart", "startx3", 0.0);
+        pin->SetReal("resize_restart", "stopx3", 2*M_PI);
+    }
+
+    // If specified, set *our* grid to exactly match the *file's* grid
+    if (pin->GetOrAddBoolean("resize_restart", "regrid_only", false)) {
+        // This locks the Parthenon mesh size to be zone-for-zone the same as the iharm3d dump file...
+        pin->SetInteger("parthenon/mesh", "nx1", n1file);
+        pin->SetInteger("parthenon/mesh", "nx2", n2file);
+        pin->SetInteger("parthenon/mesh", "nx3", n3file);
+        if (pin->GetOrAddBoolean("resize_restart", "one_meshblock", false)) {
+            // We can re-split the mesh now by using nearest-neighbor
+            // The option is provided to restart without necessarily knowing
+            // the mesh size beforehand to build a compatible meshblock
+            pin->SetInteger("parthenon/meshblock", "nx1", n1file);
+            pin->SetInteger("parthenon/meshblock", "nx2", n2file);
+            pin->SetInteger("parthenon/meshblock", "nx3", n3file);
+        }
+        // ...which of course also means setting our geometry to exactly match.
+        if (use_native_bounds) {
+            // If available, set the boundaries exactly as read from native coords
+            pin->SetReal("parthenon/mesh", "x1min", x1min);
+            pin->SetReal("parthenon/mesh", "x1max", x1max);
+            pin->SetReal("parthenon/mesh", "x2min", x2min);
+            pin->SetReal("parthenon/mesh", "x2max", x2max);
+            pin->SetReal("parthenon/mesh", "x3min", x3min);
+            pin->SetReal("parthenon/mesh", "x3max", x3max);
+
+            // Going from domain->coords values is better to match everything
+            if (file_in_spherical) {
+                pin->SetReal("coordinates", "r_in", exp(x1min));
+                pin->SetReal("coordinates", "r_out", exp(x1max));
+            }
+        } else {
+            std::cout << "Guessing geometry when restarting! This is potentially very bad to do!" << std::endl;
+            // NOTE: the reason guessing is bad here has to do with old KHARMA versions:
+            // input parameters (even geometry) were only stored to 6-digit precision in old KHARMA.
+            // This means that r_in and x3max especially were cut off, and only correct to 6 digits.
+            // Restarting with more accurate parameters can mess with the B field divergence,
+            // so we warn about it.
+            pin->SetReal("coordinates", "r_in", Rin);
+            pin->SetReal("coordinates", "r_out", Rout);
+            // xNmin/max will then be set by kharma.cpp.
+        }
+    }
+
+    // Set the coordinate system to match the restart file *even if we're resizing*
+    // Mapping to new spins/systems is theoretically fine, but we do not want to
+    // do this in any applications yet
+    if (file_in_spherical) {
+        pin->SetReal("coordinates", "a", a);
+        pin->SetReal("coordinates", "hslope", hslope);
+
+        // Sadly restarts did not record MKS vs FMKS
+        // Guess FMKS if not specified in parameter file
+        pin->SetString("coordinates", "base", "spherical_ks");
+        if (!pin->DoesParameterExist("coordinates", "transform")) {
+            pin->SetString("coordinates", "transform", "funky");
+        }
+    } else {
+        std::cout << "Guessing the restart file is in Cartesian coordinates!" << std::endl;
+        // Anything without a BH spin was pretty likely Cartesian
+        pin->SetString("coordinates", "base", "cartesian_minkowski");
+        pin->SetString("coordinates", "transform", "null");
+    }
+    // Boundary conditions will be set based on coordinate system in kharma.cpp
+
+    // We should always use the restart's fluid gamma & current time
+    pin->SetReal("GRMHD", "gamma", gam);
+    pin->SetReal("parthenon/time", "start_time", t);
+    // Set the original simulation's end time, if we wanted that
+    // Maybe for MHDModes restart test, or keeping to lower res end time
+    if (pin->GetOrAddBoolean("resize_restart", "use_tf", false)) {
+        pin->SetReal("parthenon/time", "tlim", tf);
+    }
+    if (pin->GetOrAddBoolean("resize_restart", "use_dt", true)) {
+        // Setting dt here is actually for KHARMA,
+        // which returns this from EstimateTimestep in step 0
+        pin->SetReal("parthenon/time", "dt", dt);
+    }
+}
+
+TaskStatus ReadIharmRestart(MeshBlockData<Real> *rc, ParameterInput *pin)
+{
+    Flag(rc, "Restarting from iharm3d checkpoint file");
+
+    auto pmb = rc->GetBlockPointer();
+
+    const auto fname = pin->GetString("resize_restart", "fname"); // Require this, don't guess
+    const bool regrid_only = pin->GetOrAddBoolean("resize_restart", "regrid_only", false);
+    const bool is_spherical = pin->GetBoolean("coordinates", "spherical");
+
+    // Size/domain of the file we're reading *from*.
+    const hsize_t nfprim = pin->GetInteger("resize_restart", "nfprim");
+    const hsize_t n1tot = pin->GetInteger("resize_restart", "n1tot");
+    const hsize_t n2tot = pin->GetInteger("resize_restart", "n2tot");
+    const hsize_t n3tot = pin->GetInteger("resize_restart", "n3tot");
+    const GReal startx[GR_DIM] = {0,
+        pin->GetReal("resize_restart", "startx1"),
+        pin->GetReal("resize_restart", "startx2"),
+        pin->GetReal("resize_restart", "startx3")};
+    const GReal stopx[GR_DIM] = {0,
+        pin->GetReal("resize_restart", "stopx1"),
+        pin->GetReal("resize_restart", "stopx2"),
+        pin->GetReal("resize_restart", "stopx3")};
+    const GReal dx[GR_DIM] = {0., (stopx[1] - startx[1])/n1tot,
+                                  (stopx[2] - startx[2])/n2tot,
+                                  (stopx[3] - startx[3])/n3tot};
+
+    // Sanity checks.  Unlikely to fire but nice to have
+    if (regrid_only) {
+        // Check the mesh we're declaring matches
+        if (pin->GetInteger("parthenon/mesh", "nx1") != n1tot ||
+            pin->GetInteger("parthenon/mesh", "nx2") != n2tot ||
+            pin->GetInteger("parthenon/mesh", "nx3") != n3tot) {
+            printf("Mesh size does not match!\n");
+            printf("[%d %d %d] vs [%llu %llu %llu]",
+                pin->GetInteger("parthenon/mesh", "nx1"),
+                pin->GetInteger("parthenon/mesh", "nx2"),
+                pin->GetInteger("parthenon/mesh", "nx3"),
+                n1tot, n2tot, n3tot);
+        }
+
+        if (!close_to(pin->GetReal("parthenon/mesh", "x1min"), startx[1]) ||
+            !close_to(pin->GetReal("parthenon/mesh", "x1max"), stopx[1]) ||
+            !close_to(pin->GetReal("parthenon/mesh", "x2min"), startx[2]) ||
+            !close_to(pin->GetReal("parthenon/mesh", "x2max"), stopx[2]) ||
+            !close_to(pin->GetReal("parthenon/mesh", "x3min"), startx[3]) ||
+            !close_to(pin->GetReal("parthenon/mesh", "x3max"), stopx[3])) {
+            printf("Mesh shape does not match!\n");
+            printf("X1 %g vs %g & %g vs %g\nX2 %g vs %g & %g vs %g\nX3 %g vs %g & %g vs %g",
+                pin->GetReal("parthenon/mesh", "x1min"), startx[1],
+                pin->GetReal("parthenon/mesh", "x1max"), stopx[1],
+                pin->GetReal("parthenon/mesh", "x2min"), startx[2],
+                pin->GetReal("parthenon/mesh", "x2max"), stopx[2],
+                pin->GetReal("parthenon/mesh", "x3min"), startx[3],
+                pin->GetReal("parthenon/mesh", "x3max"), stopx[3]);
+        }
+
+        if (is_spherical) {
+            // Check that the coordinate parameters r_{in,out} match the mesh
+            if (!close_to(pin->GetReal("parthenon/mesh", "x1min"),
+                        m::log(pin->GetReal("coordinates", "r_in"))) ||
+                !close_to(pin->GetReal("parthenon/mesh", "x1max"),
+                        m::log(pin->GetReal("coordinates", "r_out")))) {
+                printf("Mesh shape does not match!");
+                printf("Rin %g vs %g, Rout %g vs %g",
+                    m::exp(pin->GetReal("parthenon/mesh", "x1min")),
+                    pin->GetReal("coordinates", "r_in"),
+                    m::exp(pin->GetReal("parthenon/mesh", "x1max")),
+                    pin->GetReal("coordinates", "r_out"));
+            }
+        }
+
+    }
+
+    if(MPIRank0()) std::cout << "Reading mesh from file to cache..." << std::endl;
+
+    // In this section we're dealing with two different meshes: the one we're interpolating *from* (the "file" grid)
+    // and the one we're interpolating *to* -- the "meshblock."
+    // Additionally, in the "file" mesh we must deail with global file locations (no ghost zones, global index, prefixed "g")
+    // as well as local file locations (locations in a cache we read to host memory, prefixed "m")
+
+    // Size/domain of the MeshBlock we're reading *to*.
+    // Note that we only fill the block's physical zones --
+    // PostInitialize will take care of ghosts with MPI syncs and calls to the domain boundary conditions
+    IndexDomain domain = IndexDomain::interior;
+    const IndexRange ib = pmb->cellbounds.GetBoundsI(domain);
+    const IndexRange jb = pmb->cellbounds.GetBoundsJ(domain);
+    const IndexRange kb = pmb->cellbounds.GetBoundsK(domain);
+    const auto& G = pmb->coords;
+
+    // Total file size
+    // TODO separate nmprim to stop at 8 prims if we don't need e-
+    hsize_t fdims[] = {nfprim, n3tot, n2tot, n1tot};
+
+    // Figure out the subset in global space corresponding to our memory cache
+    int gis, gjs, gks, gie, gje, gke;
+    if (regrid_only) {
+        // For nearest neighbor "interpolation," we don't need any ghost zones
+        // Global location of first zone of our new grid
+        double X[GR_DIM];
+        G.coord(kb.s, jb.s, ib.s, Loci::center, X);
+        // Global file coordinate corresponding to that location
+        Interpolation::Xtoijk_nearest(X, startx, dx, gis, gjs, gks);
+        // Same for the end
+        G.coord(kb.e, jb.e, ib.e, Loci::center, X);
+        Interpolation::Xtoijk_nearest(X, startx, dx, gie, gje, gke);
+    } else {
+        // Linear interpolation case: we need ghost zones
+        // Global location of first zone of our new grid
+        double tmp[GR_DIM], X[GR_DIM];
+        G.coord(kb.s, jb.s, ib.s, Loci::center, X);
+        // Global file coordinate corresponding to that location
+        // Note this will be the *left* side already, so we'll never read below this.
+        // The values gis,gjs,gks can/will be -1 sometimes
+        Interpolation::Xtoijk(X, startx, dx, gis, gjs, gks, tmp);
+        // Same for the end
+        G.coord(kb.e, jb.e, ib.e, Loci::center, X);
+        Interpolation::Xtoijk(X, startx, dx, gie, gje, gke, tmp);
+        // Include one extra zone in each direction, for right side of linear interp
+        gke += 1; gje += 1; gie += 1;
+    }
+
+    // Truncate the file read sizes so we don't overrun the file data
+    hsize_t fstart[4] = {0, static_max(gks, 0), static_max(gjs, 0), static_max(gis, 0)};
+    // Test gXe against last valid index, i.e. nXtot-1
+    hsize_t fstop[4] = {nfprim-1, static_min(gke, n3tot-1), static_min(gje, n2tot-1), static_min(gie, n1tot-1)};
+    // We add one here to get sizes from indices
+    hsize_t fcount[4] = {fstop[0] - fstart[0] + 1,
+                         fstop[1] - fstart[1] + 1,
+                         fstop[2] - fstart[2] + 1,
+                         fstop[3] - fstart[3] + 1};
+    // If we overran an index on the left, we need to leave a blank row (i.e., start at 1 == true) to reflect this
+    hsize_t mstart[4] = {0, (gks < 0), (gjs < 0), (gis < 0)};
+    // Total memory size is never truncated
+    // This calculation produces XxYx2 arrays for 2D sims w/linear interp but that's fine
+    hsize_t nmk = gke-gks+1, nmj = gje-gjs+1, nmi = gie-gis+1;
+    hsize_t mdims[4] = {nfprim, nmk, nmj, nmi};
+    // TODO these should be const but hdf5_read_array yells about it, fix that
+    // TODO should yell if any of these fired for nearest-neighbor
+
+    // Allocate the array we'll need
+    hsize_t nmblock = nmk * nmj * nmi;
+    // TODO this may be float[] if we ever want to read dump files as restarts
+    double *ptmp = new double[nfprim*nmblock];
+
+    // Open the file
+    hdf5_open(fname.c_str());
+    hdf5_set_directory("/");
+
+    // Read the main array
+    hdf5_read_array(ptmp, "p", 4, fdims, fstart, fcount, mdims, mstart, H5T_IEEE_F64LE);
+
+    // Do some special reads from elsewhere in the file to fill periodic bounds
+    // Note we do NOT fill outflow/reflecting bounds here -- instead, we treat them specially below
+    // TODO this could probably be a lot cleaner
+    hsize_t fstart_tmp[4], fcount_tmp[4], mstart_tmp[4];
+#define RESET_COUNTS DLOOP1 {fstart_tmp[mu] = fstart[mu]; fcount_tmp[mu] = fcount[mu]; mstart_tmp[mu] = mstart[mu];}
+    if (gks < 0 && pmb->boundary_flag[BoundaryFace::inner_x3] == BoundaryFlag::periodic) {
+        RESET_COUNTS
+        // same X1/X2, but take only the globally LAST rank in X3
+        fstart_tmp[1] = n3tot-1;
+        fcount_tmp[1] = 1;
+        // Read it to the FIRST rank of our array
+        mstart_tmp[1] = 0;
+        hdf5_read_array(ptmp, "p", 4, fdims, fstart_tmp, fcount_tmp, mdims, mstart_tmp, H5T_IEEE_F64LE);
+    }
+    if (gke > n3tot-1 && pmb->boundary_flag[BoundaryFace::outer_x3] == BoundaryFlag::periodic) {
+        RESET_COUNTS
+        // same X1/X2, but take only the globally FIRST rank in X3
+        fstart_tmp[1] = 0;
+        fcount_tmp[1] = 1;
+        // Read it to the LAST rank of our array
+        mstart_tmp[1] = mdims[1]-1;
+        hdf5_read_array(ptmp, "p", 4, fdims, fstart_tmp, fcount_tmp, mdims, mstart_tmp, H5T_IEEE_F64LE);
+    }
+    if (gjs < 0 && pmb->boundary_flag[BoundaryFace::inner_x2] == BoundaryFlag::periodic) {
+        RESET_COUNTS
+        fstart_tmp[2] = n2tot-1;
+        fcount_tmp[2] = 1;
+        mstart_tmp[2] = 0;
+        hdf5_read_array(ptmp, "p", 4, fdims, fstart_tmp, fcount_tmp, mdims, mstart_tmp, H5T_IEEE_F64LE);
+    }
+    if (gje > n2tot-1 && pmb->boundary_flag[BoundaryFace::outer_x2] == BoundaryFlag::periodic) {
+        RESET_COUNTS
+        fstart_tmp[2] = 0;
+        fcount_tmp[2] = 1;
+        mstart_tmp[2] = mdims[2]-1;
+        hdf5_read_array(ptmp, "p", 4, fdims, fstart_tmp, fcount_tmp, mdims, mstart_tmp, H5T_IEEE_F64LE);
+    }
+    if (gis < 0 && pmb->boundary_flag[BoundaryFace::inner_x1] == BoundaryFlag::periodic) {
+        RESET_COUNTS
+        fstart_tmp[3] = n1tot-1;
+        fcount_tmp[3] = 1;
+        mstart_tmp[3] = 0;
+        hdf5_read_array(ptmp, "p", 4, fdims, fstart_tmp, fcount_tmp, mdims, mstart_tmp, H5T_IEEE_F64LE);
+    }
+    if (gie > n1tot-1 && pmb->boundary_flag[BoundaryFace::outer_x1] == BoundaryFlag::periodic) {
+        RESET_COUNTS
+        fstart_tmp[3] = 0;
+        fcount_tmp[3] = 1;
+        mstart_tmp[3] = mdims[3]-1;
+        hdf5_read_array(ptmp, "p", 4, fdims, fstart_tmp, fcount_tmp, mdims, mstart_tmp, H5T_IEEE_F64LE);
+    }
+
+    hdf5_close();
+
+    if (MPIRank0()) std::cout << "Read!" << std::endl;
+
+    // Get the arrays we'll be writing to
+    // TODO this is probably easier AND more flexible if we pack them
+    GridScalar rho = rc->Get("prims.rho").data;
+    GridScalar u = rc->Get("prims.u").data;
+    GridVector uvec = rc->Get("prims.uvec").data;
+    GridVector B_P = rc->Get("prims.B").data;
     auto rho_host = rho.GetHostMirror();
     auto u_host = u.GetHostMirror();
     auto uvec_host = uvec.GetHostMirror();
     auto B_host = B_P.GetHostMirror();
 
-    // These are set to probably mirror the restart file,
-    // but ideally should be read straight from it.
-    const GReal startx[GR_DIM] = {0,
-        pin->GetReal("parthenon/mesh", "x1min"),
-        pin->GetReal("parthenon/mesh", "x2min"),
-        pin->GetReal("parthenon/mesh", "x3min")};
-    const GReal stopx[GR_DIM] = {0,
-        pin->GetReal("parthenon/mesh", "x1max"),
-        pin->GetReal("parthenon/mesh", "x2max"),
-        pin->GetReal("parthenon/mesh", "x3max")};
-    // Same here
-    const GReal dx[GR_DIM] = {0., (stopx[1] - startx[1])/n1tot,
-                                  (stopx[2] - startx[2])/n2tot,
-                                  (stopx[3] - startx[3])/n3tot};
-
-    const int block_sz = n3tot*n2tot*n1tot;
-
-    // Host-side interpolate & copy into the mirror array
-    // TODO Support restart native coordinates != new native coordinates
+    Flag("Interpolating meshblock...");
+    // Interpolate on the host side & copy into the mirror Views
+    // Nearest-neighbor interpolation is currently only used when grids exactly correspond -- otherwise, linear interpolation is used
+    // to minimize the resulting B field divergence.
     // NOTE: KOKKOS USES < not <=!! Therefore the RangePolicy below will seem like it is too big
-    Kokkos::parallel_for("copy_restart_state",
-        Kokkos::MDRangePolicy<Kokkos::OpenMP, Kokkos::Rank<3>>({ks, js, is}, {ke+1, je+1, ie+1}),
-        KOKKOS_LAMBDA_3D {
-            // Get the zone center location
-            GReal X[GR_DIM];
+    if (regrid_only) {
+        // TODO Kokkos calls here had problems with CUDA, reintroduce/fix
+        // OpenMP here conflicts with Kokkos parallel in some cases, so we're stuck
+        for (int k=kb.s; k <= kb.e; ++k) for (int j=jb.s; j <= jb.e; ++j) for (int i=ib.s; i <= ib.e; ++i) {
+            GReal X[GR_DIM]; int gk, gj, gi;
             G.coord(k, j, i, Loci::center, X);
-            // Interpolate the value at this location from the global grid
-            rho_host(k, j, i) = interp_scalar(G, X, startx, stopx, dx, is_spherical, false, n3tot, n2tot, n1tot, &(ptmp[0*block_sz]));
-            u_host(k, j, i) = interp_scalar(G, X, startx, stopx, dx, is_spherical, false, n3tot, n2tot, n1tot, &(ptmp[1*block_sz]));
-            VLOOP uvec_host(v, k, j, i) = interp_scalar(G, X, startx, stopx, dx, is_spherical, false, n3tot, n2tot, n1tot, &(ptmp[(2+v)*block_sz]));
-            VLOOP B_host(v, k, j, i) = interp_scalar(G, X, startx, stopx, dx, is_spherical, false, n3tot, n2tot, n1tot, &(ptmp[(5+v)*block_sz]));
+            Interpolation::Xtoijk_nearest(X, startx, dx, gi, gj, gk);
+            // TODO verify this never reads zones outside the cache
+            // Calculate indices inside our cached block
+            int mk = gk - gks, mj = gj - gjs, mi = gi - gis;
+            // Fill cells of the new block with equivalents in the cached block
+            rho_host(k, j, i) = ptmp[0*nmblock + mk*nmj*nmi + mj*nmi + mi];
+            u_host(k, j, i)   = ptmp[1*nmblock + mk*nmj*nmi + mj*nmi + mi];
+            VLOOP uvec_host(v, k, j, i) = ptmp[(2+v)*nmblock + mk*nmj*nmi + mj*nmi + mi];
+            VLOOP B_host(v, k, j, i) = ptmp[(5+v)*nmblock + mk*nmj*nmi + mj*nmi + mi];
         }
-    );
-    delete[] ptmp;
+    } else {
+        // TODO real boundary flags. Repeat on any outflow/reflecting bounds
+        const bool repeat_x1i = is_spherical;
+        const bool repeat_x1o = is_spherical;
+        const bool repeat_x2i = is_spherical;
+        const bool repeat_x2o = is_spherical;
+
+        for (int k=kb.s; k <= kb.e; ++k) for (int j=jb.s; j <= jb.e; ++j) for (int i=ib.s; i <= ib.e; ++i) {
+            GReal X[GR_DIM], del[GR_DIM]; int gk, gj, gi;
+            // Get the zone center location
+            G.coord(k, j, i, Loci::center, X);
+            // Get global indices
+            Interpolation::Xtoijk(X, startx, dx, gi, gj, gk, del);
+            // Make any corrections due to global boundaries
+            // Currently just repeats the last zone, equivalent to falling back to nearest-neighbor
+            if (repeat_x1i && gi < 0) { gi = 0; del[1] = 0; }
+            if (repeat_x1o && gi > n1tot-2) { gi = n1tot - 2; del[1] = 1; }
+            if (repeat_x2i && gj < 0) { gj = 0; del[2] = 0; }
+            if (repeat_x2o && gj > n2tot-2) { gj = n2tot - 2; del[2] = 1; }
+            // Calculate indices inside our cached block
+            int mk = gk - gks, mj = gj - gjs, mi = gi - gis;
+            // Interpolate the value at this location from the cached grid
+            rho_host(k, j, i) = Interpolation::linear(mi, mj, mk, nmi, nmj, nmk, del, &(ptmp[0*nmblock]));
+            u_host(k, j, i) = Interpolation::linear(mi, mj, mk, nmi, nmj, nmk, del, &(ptmp[1*nmblock]));
+            VLOOP uvec_host(v, k, j, i) = Interpolation::linear(mi, mj, mk, nmi, nmj, nmk, del, &(ptmp[(2+v)*nmblock]));
+            VLOOP B_host(v, k, j, i) = Interpolation::linear(mi, mj, mk, nmi, nmj, nmk, del, &(ptmp[(5+v)*nmblock]));
+        }
+    }
 
     // Deep copy to device
+    Flag("Copying meshblock to device...");
     rho.DeepCopy(rho_host);
     u.DeepCopy(u_host);
     uvec.DeepCopy(uvec_host);
     B_P.DeepCopy(B_host);
     Kokkos::fence();
 
-    // Set the original simulation's end time, if we wanted that
-    // Used pretty much only for MHDModes restart test
-    if (use_tf) {
-        pin->SetReal("parthenon/time", "tlim", tf);
-    }
-    if (use_dt) {
-        // Setting dt here is actually for KHARMA,
-        // which returns this from EstimateTimestep in step 0
-        pin->SetReal("parthenon/time", "dt", dt);
-    }
+    // Delete our cache.  Only we ever used it, so we're safe here.
+    Flag("Deleting cached interpolation values");
+    delete[] ptmp;
 
     return TaskStatus::complete;
 }
