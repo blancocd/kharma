@@ -161,8 +161,10 @@ KOKKOS_INLINE_FUNCTION void prim_to_flux(const GRCoordinates& G, const Local& P,
             flux(m_u.K_CONSTANT) = flux(m_u.RHO) * P(m_p.K_CONSTANT);
         if (m_p.K_HOWES >= 0)
             flux(m_u.K_HOWES) = flux(m_u.RHO) * P(m_p.K_HOWES);
-        if (m_p.K_KAWAZURA >= 0)
-            flux(m_u.K_KAWAZURA) = flux(m_u.RHO) * P(m_p.K_KAWAZURA);
+        if (m_p.K_KAWAZURA18 >= 0)
+            flux(m_u.K_KAWAZURA18) = flux(m_u.RHO) * P(m_p.K_KAWAZURA18);
+        if (m_p.K_KAWAZURA22 >= 0)
+            flux(m_u.K_KAWAZURA22) = flux(m_u.RHO) * P(m_p.K_KAWAZURA22);
         if (m_p.K_WERNER >= 0)
             flux(m_u.K_WERNER) = flux(m_u.RHO) * P(m_p.K_WERNER);
         if (m_p.K_ROWAN >= 0)
@@ -243,8 +245,10 @@ KOKKOS_INLINE_FUNCTION void prim_to_flux(const GRCoordinates& G, const Global& P
             flux(m_u.K_CONSTANT, k, j, i) = flux(m_u.RHO, k, j, i) * P(m_p.K_CONSTANT, k, j, i);
         if (m_p.K_HOWES >= 0)
             flux(m_u.K_HOWES, k, j, i)    = flux(m_u.RHO, k, j, i) * P(m_p.K_HOWES, k, j, i);
-        if (m_p.K_KAWAZURA >= 0)
-            flux(m_u.K_KAWAZURA, k, j, i) = flux(m_u.RHO, k, j, i) * P(m_p.K_KAWAZURA, k, j, i);
+        if (m_p.K_KAWAZURA18 >= 0)
+            flux(m_u.K_KAWAZURA18, k, j, i) = flux(m_u.RHO, k, j, i) * P(m_p.K_KAWAZURA18, k, j, i);
+        if (m_p.K_KAWAZURA22 >= 0)
+            flux(m_u.K_KAWAZURA22, k, j, i) = flux(m_u.RHO, k, j, i) * P(m_p.K_KAWAZURA22, k, j, i);
         if (m_p.K_WERNER >= 0)
             flux(m_u.K_WERNER, k, j, i)   = flux(m_u.RHO, k, j, i) * P(m_p.K_WERNER, k, j, i);
         if (m_p.K_ROWAN >= 0)

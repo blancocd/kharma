@@ -404,12 +404,13 @@ KOKKOS_INLINE_FUNCTION int apply_floors(const GRCoordinates& G, const VariablePa
         const Real reduce   = m::pow(rho / P(m_p.RHO, k, j, i), gam);
         const Real reduce_e = m::pow(rho / P(m_p.RHO, k, j, i), 4./3); // TODO pipe in real gam_e
         if (m_p.KTOT >= 0) P(m_p.KTOT, k, j, i) *= reduce;
-        if (m_p.K_CONSTANT >= 0) P(m_p.K_CONSTANT, k, j, i) *= reduce_e;
-        if (m_p.K_HOWES >= 0)    P(m_p.K_HOWES, k, j, i)    *= reduce_e;
-        if (m_p.K_KAWAZURA >= 0) P(m_p.K_KAWAZURA, k, j, i) *= reduce_e;
-        if (m_p.K_WERNER >= 0)   P(m_p.K_WERNER, k, j, i)   *= reduce_e;
-        if (m_p.K_ROWAN >= 0)    P(m_p.K_ROWAN, k, j, i)    *= reduce_e;
-        if (m_p.K_SHARMA >= 0)   P(m_p.K_SHARMA, k, j, i)   *= reduce_e;
+        if (m_p.K_CONSTANT >= 0)    P(m_p.K_CONSTANT, k, j, i)      *= reduce_e;
+        if (m_p.K_HOWES >= 0)       P(m_p.K_HOWES, k, j, i)         *= reduce_e;
+        if (m_p.K_KAWAZURA18 >= 0)  P(m_p.K_KAWAZURA18, k, j, i)    *= reduce_e;
+        if (m_p.K_KAWAZURA22 >= 0)  P(m_p.K_KAWAZURA22, k, j, i)    *= reduce_e;
+        if (m_p.K_WERNER >= 0)      P(m_p.K_WERNER, k, j, i)        *= reduce_e;
+        if (m_p.K_ROWAN >= 0)       P(m_p.K_ROWAN, k, j, i)         *= reduce_e;
+        if (m_p.K_SHARMA >= 0)      P(m_p.K_SHARMA, k, j, i)        *= reduce_e;
     }
 
     // Return both flags

@@ -10,6 +10,7 @@
 
 if [[ $HOST == *".delta.internal.ncsa.edu" ]]
 then
+  # EXTRA_FLAGS="-DPARTHENON_DISABLE_MPI=OFF"
   HOST_ARCH=ZEN3
   DEVICE_ARCH=AMPERE80
 
@@ -22,6 +23,8 @@ then
   then
     # GPU Compile
     # 4-device MPI
+    # MPI_EXTRA_ARGS="--map-by ppr:1:node:pe=16"
+    # MPI_NUM_PROCS=1
     MPI_EXTRA_ARGS="--map-by ppr:4:node:pe=16"
     MPI_NUM_PROCS=4
 

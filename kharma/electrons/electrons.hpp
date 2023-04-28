@@ -149,8 +149,10 @@ KOKKOS_INLINE_FUNCTION void p_to_u(const GRCoordinates& G, const VariablePack<Re
         flux(m_u.K_CONSTANT, k, j, i) = rho_ut * P(m_p.K_CONSTANT, k, j, i);
     if (m_p.K_HOWES >= 0)
         flux(m_u.K_HOWES, k, j, i) = rho_ut * P(m_p.K_HOWES, k, j, i);
-    if (m_p.K_KAWAZURA >= 0)
-        flux(m_u.K_KAWAZURA, k, j, i) = rho_ut * P(m_p.K_KAWAZURA, k, j, i);
+    if (m_p.K_KAWAZURA18 >= 0)
+        flux(m_u.K_KAWAZURA18, k, j, i) = rho_ut * P(m_p.K_KAWAZURA18, k, j, i);
+    if (m_p.K_KAWAZURA22 >= 0)
+        flux(m_u.K_KAWAZURA22, k, j, i) = rho_ut * P(m_p.K_KAWAZURA22, k, j, i);
     if (m_p.K_WERNER >= 0)
         flux(m_u.K_WERNER, k, j, i) = rho_ut * P(m_p.K_WERNER, k, j, i);
     if (m_p.K_ROWAN >= 0)

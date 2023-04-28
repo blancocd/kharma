@@ -93,7 +93,7 @@ class VarMap {
         // Tracker variables
         int8_t RHO_ADDED, UU_ADDED, PASSIVE;
         // Electron entropy/energy tracking
-        int8_t KTOT, K_CONSTANT, K_HOWES, K_KAWAZURA, K_WERNER, K_ROWAN, K_SHARMA;
+        int8_t KTOT, K_CONSTANT, K_HOWES, K_KAWAZURA18, K_KAWAZURA22, K_WERNER, K_ROWAN, K_SHARMA;
         // Implicit-solver variables: constraint damping, EGRMHD
         int8_t PSI, Q, DP;
         // Total struct size ~20 bytes, < 1 vector of 4 doubles
@@ -115,7 +115,8 @@ class VarMap {
                 KTOT = name_map["cons.Ktot"].first;
                 K_CONSTANT = name_map["cons.Kel_Constant"].first;
                 K_HOWES = name_map["cons.Kel_Howes"].first;
-                K_KAWAZURA = name_map["cons.Kel_Kawazura"].first;
+                K_KAWAZURA18 = name_map["cons.Kel_Kawazura18"].first;
+                K_KAWAZURA22 = name_map["cons.Kel_Kawazura22"].first;
                 K_WERNER = name_map["cons.Kel_Werner"].first;
                 K_ROWAN = name_map["cons.Kel_Rowan"].first;
                 K_SHARMA = name_map["cons.Kel_Sharma"].first;
@@ -137,7 +138,8 @@ class VarMap {
                 KTOT = name_map["prims.Ktot"].first;
                 K_CONSTANT = name_map["prims.Kel_Constant"].first;
                 K_HOWES = name_map["prims.Kel_Howes"].first;
-                K_KAWAZURA = name_map["prims.Kel_Kawazura"].first;
+                K_KAWAZURA18 = name_map["prims.Kel_Kawazura18"].first;
+                K_KAWAZURA22 = name_map["prims.Kel_Kawazura22"].first;
                 K_WERNER = name_map["prims.Kel_Werner"].first;
                 K_ROWAN = name_map["prims.Kel_Rowan"].first;
                 K_SHARMA = name_map["prims.Kel_Sharma"].first;
