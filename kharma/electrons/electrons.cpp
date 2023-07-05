@@ -460,7 +460,8 @@ TaskStatus ApplyElectronHeating(MeshBlockData<Real> *rc_old, MeshBlockData<Real>
                 const Real beta = pres / bsq * 2;
                 const Real sigma = bsq / (P(m_p.RHO, k, j, i) + P(m_p.UU, k, j, i) + pg); // Enthalpy density
                 const Real betamax = 0.25 / sigma;
-                const Real fel = 0.5 * exp(-m::pow(1 - beta/betamax, 3.3) / (1 + 1.2*m::pow(sigma, 0.7)));
+                // Need to enforce that we are raising a nonnegative number
+                const Real fel = 0.5 * exp(-m::pow(m::max(0., 1 - beta/betamax), 3.3) / (1 + 1.2*m::pow(sigma, 0.7)));
                 P_new(m_p.K_ROWAN, k, j, i) = clip(P_new(m_p.K_ROWAN, k, j, i) + fel * diss, kel_min, kel_max);
             }
             if (m_p.K_SHARMA >= 0) {
